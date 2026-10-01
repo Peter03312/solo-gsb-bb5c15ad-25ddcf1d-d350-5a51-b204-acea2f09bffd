@@ -56,6 +56,14 @@ function previewRestore(versionNo) {
     )
     .all(versionId);
 
+  const snapSameDay = db
+    .prepare(
+      `SELECT same_day_relation_id AS sameDayRelationId, event_a_id AS eventAId,
+              event_b_id AS eventBId, source, note
+         FROM version_same_day_relations WHERE version_id = ? ORDER BY sort_order`
+    )
+    .all(versionId);
+
   // 当前草稿中将被替换的内容
   const currentEvents = db
     .prepare(
@@ -67,16 +75,20 @@ function previewRestore(versionNo) {
   const currentRelations = db
     .prepare('SELECT id, earlier_id AS earlierId, later_id AS laterId FROM relations ORDER BY id')
     .all();
+  const currentSameDay = db
+    .prepare('SELECT id, event_a_id AS eventAId, event_b_id AS eventBId FROM same_day_relations ORDER BY id')
+    .all();
 
   return {
     versionNo,
     version,
     draftRevision: getDraftRevision(),
     latestVersionNo: latestVersionNo(),
-    snapshot: { events: snapEvents, relations: snapRelations },
+    snapshot: { events: snapEvents, relations: snapRelations, sameDayRelations: snapSameDay },
     currentDraft: {
       events: currentEvents,
       relations: currentRelations,
+      sameDayRelations: currentSameDay,
     },
   };
 }
@@ -120,9 +132,13 @@ function confirmRestore({ versionNo, draftRevision, expectedLatestVersionNo }) {
     const snapRels = db
       .prepare('SELECT * FROM version_relations WHERE version_id = ? ORDER BY sort_order')
       .all(versionId);
+    const snapSd = db
+      .prepare('SELECT * FROM version_same_day_relations WHERE version_id = ? ORDER BY sort_order')
+      .all(versionId);
 
     // ---- 原子替换草稿区 ----
     // 外键 ON DELETE CASCADE 会连带 claims / relations；为稳妥显式清空。
+    db.prepare('DELETE FROM same_day_relations').run();
     db.prepare('DELETE FROM relations').run();
     db.prepare('DELETE FROM claims').run();
     db.prepare('DELETE FROM events').run();
@@ -135,6 +151,9 @@ function confirmRestore({ versionNo, draftRevision, expectedLatestVersionNo }) {
     `);
     const insRel = db.prepare(
       'INSERT INTO relations (earlier_id, later_id, source, note) VALUES (?, ?, ?, ?)'
+    );
+    const insSd = db.prepare(
+      'INSERT INTO same_day_relations (event_a_id, event_b_id, source, note) VALUES (?, ?, ?, ?)'
     );
 
     // 快照只保存当版被选主张，故每个事件只重建一条主张（待编辑台继续校验发布）。
@@ -180,13 +199,24 @@ function confirmRestore({ versionNo, draftRevision, expectedLatestVersionNo }) {
       relationIdMap[sr.relation_id] = info.lastInsertRowid;
     }
 
+    // 按快照重建「同日」关系（端点映射到新事件 id；仍按 id 升序归一化）
+    const sameDayRelationIdMap = {};
+    for (const sr of snapSd) {
+      let newA = eventIdMap[sr.event_a_id];
+      let newB = eventIdMap[sr.event_b_id];
+      if (newA === undefined || newB === undefined) continue;
+      if (newA > newB) [newA, newB] = [newB, newA];
+      const info = insSd.run(newA, newB, sr.source || '', sr.note || '');
+      sameDayRelationIdMap[sr.same_day_relation_id] = info.lastInsertRowid;
+    }
+
     // 恢复本身也是一次草稿变更，推进修订号
     bumpDraftRevision(db);
 
-    return { eventIdMap, claimIdMap, relationIdMap };
+    return { eventIdMap, claimIdMap, relationIdMap, sameDayRelationIdMap };
   });
 
-  const { eventIdMap, claimIdMap, relationIdMap } = tx();
+  const { eventIdMap, claimIdMap, relationIdMap, sameDayRelationIdMap } = tx();
 
   return {
     ok: true,
@@ -195,6 +225,7 @@ function confirmRestore({ versionNo, draftRevision, expectedLatestVersionNo }) {
       events: eventIdMap,
       claims: claimIdMap,
       relations: relationIdMap,
+      sameDayRelations: sameDayRelationIdMap,
     },
     state: readDraftState(),
   };

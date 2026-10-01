@@ -22,7 +22,7 @@
 // 本模块不执行任何写库操作，不推进草稿修订号，不触碰发布版本。
 
 const { getDb } = require('./db');
-const { solve, claimToInterval } = require('./solver');
+const { solve, claimToInterval, buildSameDayGroups } = require('./solver');
 const { isoFromOrdinal } = require('./dates');
 const { getDraftRevision } = require('./draft');
 
@@ -33,7 +33,6 @@ const SEARCH_NODE_BUDGET = 1_000_000;
 function httpError(status, body) {
   throw Object.assign({ status }, body);
 }
-
 function staleError(submitted, current) {
   return {
     status: 409,
@@ -59,6 +58,9 @@ function suggestReselection({ selectionList, draftRevision }) {
   const claimRows = db.prepare('SELECT * FROM claims ORDER BY id').all();
   const relations = db
     .prepare('SELECT id, earlier_id AS earlierId, later_id AS laterId, source, note FROM relations ORDER BY id')
+    .all();
+  const sameDayRelations = db
+    .prepare('SELECT id, event_a_id AS eventAId, event_b_id AS eventBId, source, note FROM same_day_relations ORDER BY id')
     .all();
 
   const eventById = new Map(events.map((e) => [e.id, e]));
@@ -134,22 +136,28 @@ function suggestReselection({ selectionList, draftRevision }) {
     selectionList.map((i) => [i.eventId, claimToInterval(claimById.get(i.claimId))])
   );
 
-  // ---- 4) 成环（以及关系指向失效）不随主张选择改变，先于求解判定 ----
-  const probe = solve(events, currentIntervals, relations);
+  // ---- 4) 结构性矛盾（不随主张选择改变）先于求解判定 ----
+  //   cycle / broken_relation / same_day_conflict（组内先于）均无法靠改选消除；
+  //   same_day_interval / temporal 正是要靠搜索改选的情形。
+  const probe = solve(events, currentIntervals, relations, sameDayRelations);
   if (!probe.ok) {
     const err = probe.errors[0];
-    if (err.type === 'cycle' || err.type === 'broken_relation') {
+    if (err.type === 'cycle' || err.type === 'broken_relation' || err.type === 'same_day_conflict') {
       httpError(422, {
         code: 'UNRESOLVABLE_BY_RESELECTION',
         reason: err.type,
-        message: `「先于」关系${err.type === 'cycle' ? '成环' : '指向了不存在的事件'}，改选主张不能消除该问题：${err.message}`,
+        message:
+          err.type === 'same_day_conflict'
+            ? `同一同日组内存在「先于」关系，改选主张不能消除该矛盾：${err.message}`
+            : `「先于」关系${err.type === 'cycle' ? '成环' : '指向了不存在的事件'}，改选主张不能消除该问题：${err.message}`,
         eventIds: err.eventIds,
         relationIds: err.relationIds,
+        sameDayRelationIds: err.sameDayRelationIds || [],
         detail: err.detail || '',
         errors: probe.errors,
       });
     }
-    // temporal：正是要搜索改选的情形；missing 在上面校验后理论上不会出现
+    // temporal / same_day_interval：正是要搜索改选的情形
   }
 
   // 每事件候选（claims ORDER BY id，故按主张 id 升序）
@@ -157,10 +165,38 @@ function suggestReselection({ selectionList, draftRevision }) {
     events.map((e) => [e.id, claimsByEvent.get(e.id).map(claimToInterval)])
   );
 
-  // ---- 5) 分支限界搜索 ----
+  // ---- 4b) 结构性矛盾在任意主张组合下都存在：折叠成环（含组内先于链 / 组内直接先于）----
+  // 用「无限宽」区间跑一遍求解器，只暴露结构问题，排除区间造成的 temporal 干扰。
+  const wide = new Map(
+    events.map((e) => [
+      e.id,
+      { claimId: -1, startOrd: -1e12, endOrd: 1e12, source: '', label: 'wide' },
+    ])
+  );
+  const structural = solve(events, wide, relations, sameDayRelations);
+  if (!structural.ok) {
+    const err = structural.errors[0];
+    if (err.type === 'cycle' || err.type === 'same_day_conflict' || err.type === 'broken_relation') {
+      httpError(422, {
+        code: 'UNRESOLVABLE_BY_RESELECTION',
+        reason: err.type,
+        message:
+          err.type === 'same_day_conflict'
+            ? `同一同日组内存在「先于」关系，改选主张不能消除该矛盾：${err.message}`
+            : `「先于」关系${err.type === 'cycle' ? '成环' : '指向了不存在的事件'}，改选主张不能消除该问题：${err.message}`,
+        eventIds: err.eventIds,
+        relationIds: err.relationIds,
+        sameDayRelationIds: err.sameDayRelationIds || [],
+        detail: err.detail || '',
+      });
+    }
+  }
+
+  // ---- 5) 分支限界搜索（以同日连通组为单位折叠后求最少改选） ----
   const { assignment, count, limited } = searchFeasibleAssignment({
     events,
     relations,
+    sameDayRelations,
     candidates,
     currentClaim,
   });
@@ -182,10 +218,11 @@ function suggestReselection({ selectionList, draftRevision }) {
       code: 'UNRESOLVABLE_BY_RESELECTION',
       reason: 'no_feasible_combination',
       message:
-        '在各事件的现有主张内任意改选，都找不到满足全部「先于」关系的具体日期组合；' +
-        '无法靠改选解决，请为相关事件补录更早 / 更晚的主张，或调整先于关系。',
+        '在各事件的现有主张内任意改选，都找不到满足全部「先于」/「同日」关系的具体日期组合；' +
+        '无法靠改选解决，请为相关事件补录更早 / 更晚的主张，或调整先于、同日关系。',
       eventIds: [],
       relationIds: relations.map((r) => r.id),
+      sameDayRelationIds: sameDayRelations.map((r) => r.id),
     });
   }
 
@@ -193,7 +230,7 @@ function suggestReselection({ selectionList, draftRevision }) {
   const chosenIntervals = new Map(
     events.map((e) => [e.id, candidates.get(e.id).find((c) => c.claimId === assignment.get(e.id))])
   );
-  const verified = solve(events, chosenIntervals, relations);
+  const verified = solve(events, chosenIntervals, relations, sameDayRelations);
   if (!verified.ok) {
     // 理论不可达：搜索到的组合必然可行
     httpError(422, {
@@ -202,6 +239,7 @@ function suggestReselection({ selectionList, draftRevision }) {
       message: '改选组合复核失败，无法靠改选解决。',
       eventIds: [],
       relationIds: relations.map((r) => r.id),
+      sameDayRelationIds: sameDayRelations.map((r) => r.id),
     });
   }
 
@@ -225,80 +263,159 @@ function suggestReselection({ selectionList, draftRevision }) {
 
 // ---------- 分支限界搜索 ----------
 //
-// 事件按拓扑序逐个赋值；每条候选主张给出事件的最早可行日
-//   lo(v) = max(区间起点, 对每条 u->v: lo(u) + 1)
-// lo(v) 超过区间终点则该候选不可行。
-// 最小化「与当前选择不同的事件数」；平手按事件 ID 升序的主张 ID 序列字典序。
-function searchFeasibleAssignment({ events, relations, candidates, currentClaim }) {
-  const adj = new Map(events.map((e) => [e.id, []]));
-  const indeg = new Map(events.map((e) => [e.id, 0]));
-  const incoming = new Map(events.map((e) => [e.id, []]));
-  for (const r of relations) {
-    if (!adj.has(r.earlierId) || !adj.has(r.laterId)) continue; // 成环/失效已在前置校验拦截
-    adj.get(r.earlierId).push(r.laterId);
-    indeg.set(r.laterId, indeg.get(r.laterId) + 1);
-    incoming.get(r.laterId).push(r);
+// 先按「同日」关系把事件折叠成连通组；每组的一个「选项」是组内各事件主张的一个
+// 组合，其可取值区间为组内各事件区间的交集（交集为空的选项直接剔除）。
+// 跨组「先于」边在组图上传播：
+//   lo(H) = max(选项区间起点H, 对每条 G->H: lo(G) + 1)
+// lo(H) 超过选项区间终点则该选项不可行。
+// 最小化「与当前选择不同的事件数」（以事件计；同日组选项可能同时改选多个事件）；
+// 平手按事件 ID 升序的主张 ID 序列字典序。
+function searchFeasibleAssignment({ events, relations, sameDayRelations = [], candidates, currentClaim }) {
+  const eventIds = events.map((e) => e.id);
+  const { compOf, members } = buildSameDayGroups(eventIds, sameDayRelations);
+  const compKeys = [...members.keys()].sort((a, b) => a - b);
+
+  // 每个组件的全部可行选项：[{ claims: Map(eventId -> claimId), startOrd, endOrd }]
+  // 组内只含一个事件时，选项即该事件的各条主张；多事件组做笛卡尔积并按区间交集过滤。
+  const optionsByComp = new Map();
+  for (const key of compKeys) {
+    const list = members.get(key);
+    const combos = [];
+    (function recurse(pos, picks) {
+      if (pos === list.length) {
+        let start = -Infinity;
+        let end = Infinity;
+        for (const c of picks) {
+          if (c.startOrd > start) start = c.startOrd;
+          if (c.endOrd < end) end = c.endOrd;
+        }
+        if (start <= end) {
+          const claims = new Map();
+          list.forEach((id, i) => claims.set(id, picks[i].claimId));
+          combos.push({ claims, startOrd: start, endOrd: end });
+        }
+        return;
+      }
+      // 候选已按主张 id 升序（claims ORDER BY id）
+      for (const cand of candidates.get(list[pos])) {
+        picks.push(cand);
+        recurse(pos + 1, picks);
+        picks.pop();
+      }
+    })(0, []);
+    optionsByComp.set(key, combos);
   }
 
-  // Kahn 拓扑（前置 solve 已保证是 DAG）
-  const queue = events.filter((e) => indeg.get(e.id) === 0).map((e) => e.id);
+  // 跨组「先于」边构成组图（组内先于已在前置校验拦截）
+  const adj = new Map(compKeys.map((k) => [k, []]));
+  const indeg = new Map(compKeys.map((k) => [k, 0]));
+  const incoming = new Map(compKeys.map((k) => [k, []]));
+  for (const r of relations) {
+    const ga = compOf.get(r.earlierId);
+    const gb = compOf.get(r.laterId);
+    if (ga === undefined || gb === undefined || ga === gb) continue;
+    adj.get(ga).push(gb);
+    indeg.set(gb, indeg.get(gb) + 1);
+    incoming.get(gb).push(ga);
+  }
+
+  // Kahn 拓扑
+  const queue = compKeys.filter((k) => indeg.get(k) === 0);
   const topo = [];
   while (queue.length) {
-    const id = queue.shift();
-    topo.push(id);
-    for (const to of adj.get(id)) {
+    const k = queue.shift();
+    topo.push(k);
+    for (const to of adj.get(k)) {
       indeg.set(to, indeg.get(to) - 1);
       if (indeg.get(to) === 0) queue.push(to);
     }
   }
 
-  const eventIdsSorted = events.map((e) => e.id).sort((a, b) => a - b);
+  const eventIdsSorted = eventIds.slice().sort((a, b) => a - b);
 
-  function earliestFor(id, cand, lower) {
-    let lo = cand.startOrd;
-    for (const r of incoming.get(id)) {
-      const v = lower.get(r.earlierId) + 1;
-      if (v > lo) lo = v;
+  function optionChangedCount(key, opt) {
+    let n = 0;
+    for (const [eventId, claimId] of opt.claims) {
+      if (currentClaim.get(eventId) !== claimId) n += 1;
     }
-    return lo <= cand.endOrd ? lo : null;
+    return n;
   }
 
-  // 贪心种子求一个上界：拓扑序上优先保留当前主张，否则取最小可行主张 id。
+  // 选项是否与组内「当前选择」完全一致
+  function optionIsCurrent(key, opt) {
+    for (const [eventId, claimId] of opt.claims) {
+      if (currentClaim.get(eventId) !== claimId) return false;
+    }
+    return true;
+  }
+
+  function earliestFor(key, opt, lower) {
+    let lo = opt.startOrd;
+    for (const from of incoming.get(key)) {
+      const v = lower.get(from) + 1;
+      if (v > lo) lo = v;
+    }
+    return lo <= opt.endOrd ? lo : null;
+  }
+
+  // 选项排序：当前组合优先（尽早得到少改选上界），其余按「组内事件 id 升序的主张 id 序列」字典序
+  function sortOptions(key) {
+    const list = members.get(key);
+    return optionsByComp.get(key).slice().sort((a, b) => {
+      const ca = optionIsCurrent(key, a);
+      const cb = optionIsCurrent(key, b);
+      if (ca !== cb) return ca ? -1 : 1;
+      for (const id of list) {
+        const x = a.claims.get(id);
+        const y = b.claims.get(id);
+        if (x !== y) return x - y;
+      }
+      return 0;
+    });
+  }
+  const orderedOptions = new Map(compKeys.map((k) => [k, sortOptions(k)]));
+
+  // 贪心种子：拓扑序上优先保留当前组合，否则取字典序最小的可行选项
   const seed = new Map();
   const seedLower = new Map();
   let seedOk = true;
-  for (const id of topo) {
-    const curId = currentClaim.get(id);
-    const list = candidates.get(id);
-    let picked = list.find((c) => c.claimId === curId) || null;
-    let lo = picked && earliestFor(id, picked, seedLower);
+  for (const key of topo) {
+    const opts = orderedOptions.get(key);
+    let picked = opts.find((o) => optionIsCurrent(key, o)) || null;
+    let lo = picked && earliestFor(key, picked, seedLower);
     if (lo === null || lo === undefined) {
       picked = null;
       lo = null;
-      for (const c of list) {
-        const v = earliestFor(id, c, seedLower);
-        if (v !== null) { picked = c; lo = v; break; }
+      for (const o of opts) {
+        const v = earliestFor(key, o, seedLower);
+        if (v !== null) { picked = o; lo = v; break; }
       }
     }
     if (picked === null) { seedOk = false; break; }
-    seed.set(id, picked.claimId);
-    seedLower.set(id, lo);
+    seed.set(key, picked);
+    seedLower.set(key, lo);
   }
   let best = null;
   if (seedOk) {
-    best = { assignment: seed, count: countChanges(seed, currentClaim) };
+    best = { optionByComp: seed, count: seedChangedCount(seed) };
   }
 
   let nodes = 0;
   let limited = false;
   const lower = new Map();
-  const assign = new Map();
+  const optionByComp = new Map();
   const budgetExceeded = Symbol('budget');
+
+  function seedChangedCount(optByComp) {
+    let n = 0;
+    for (const [key, opt] of optByComp) n += optionChangedCount(key, opt);
+    return n;
+  }
 
   function lexSmallerThanBest() {
     for (const id of eventIdsSorted) {
-      const a = assign.get(id);
-      const b = best.assignment.get(id);
+      const a = optionByComp.get(compOf.get(id)).claims.get(id);
+      const b = best.optionByComp.get(compOf.get(id)).claims.get(id);
       if (a !== b) return a < b;
     }
     return false;
@@ -310,26 +427,20 @@ function searchFeasibleAssignment({ events, relations, candidates, currentClaim 
 
     if (pos === topo.length) {
       if (!best || changed < best.count || (changed === best.count && lexSmallerThanBest())) {
-        best = { assignment: new Map(assign), count: changed };
+        best = { optionByComp: new Map(optionByComp), count: changed };
       }
       return;
     }
 
-    const id = topo[pos];
-    const curId = currentClaim.get(id);
-    // 当前主张优先探（尽早得到少改选上界），其余按主张 id 升序
-    const ordered = candidates.get(id)
-      .slice()
-      .sort((a, b) => (a.claimId === curId ? -1 : b.claimId === curId ? 1 : a.claimId - b.claimId));
-
-    for (const cand of ordered) {
-      const lo = earliestFor(id, cand, lower);
+    const key = topo[pos];
+    for (const opt of orderedOptions.get(key)) {
+      const lo = earliestFor(key, opt, lower);
       if (lo === null) continue;
-      lower.set(id, lo);
-      assign.set(id, cand.claimId);
-      dfs(pos + 1, changed + (cand.claimId === curId ? 0 : 1));
-      lower.delete(id);
-      assign.delete(id);
+      lower.set(key, lo);
+      optionByComp.set(key, opt);
+      dfs(pos + 1, changed + optionChangedCount(key, opt));
+      lower.delete(key);
+      optionByComp.delete(key);
       if (limited) return;
     }
   }
@@ -340,20 +451,15 @@ function searchFeasibleAssignment({ events, relations, candidates, currentClaim 
     if (e !== budgetExceeded) throw e;
   }
 
-  return {
-    assignment: limited ? null : best && best.assignment,
-    count: limited || !best ? null : best.count,
-    nodes,
-    limited,
-  };
-}
-
-function countChanges(assignment, currentClaim) {
-  let n = 0;
-  for (const [eventId, claimId] of assignment) {
-    if (currentClaim.get(eventId) !== claimId) n += 1;
+  // 组件选项展开回 eventId -> claimId
+  let assignment = null;
+  if (!limited && best) {
+    assignment = new Map();
+    for (const [key, opt] of best.optionByComp) {
+      for (const [eventId, claimId] of opt.claims) assignment.set(eventId, claimId);
+    }
   }
-  return n;
+  return { assignment, count: limited || !best ? null : best.count, nodes, limited };
 }
 
 // ---------- 响应组装 ----------

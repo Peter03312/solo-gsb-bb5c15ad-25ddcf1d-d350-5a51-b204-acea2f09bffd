@@ -74,6 +74,26 @@
         </div>
 
         <div class="card">
+          <h2>「同日」关系</h2>
+          <p class="muted">
+            声明两个事件发生在<b>同一天</b>，两端不分先后；同日可经多条关系传递（A 同日 B、B 同日 C 即三者同日）。
+            同组事件共享一个具体日期，组间仍按「先于」至少相差一天。
+          </p>
+          <div id="sdList"></div>
+          <h3 style="margin-top:14px">新增同日关系</h3>
+          <div class="row">
+            <div class="field"><label>事件</label><select id="sdA"></select></div>
+            <div style="padding-bottom:6px">同日</div>
+            <div class="field"><label>事件</label><select id="sdB"></select></div>
+          </div>
+          <label style="margin-top:8px">出处（可选）</label>
+          <input type="text" id="sdSource" />
+          <label style="margin-top:6px">备注（可选）</label>
+          <input type="text" id="sdNote" />
+          <div style="margin-top:8px"><button id="btnAddSd" type="button">添加同日关系</button></div>
+        </div>
+
+        <div class="card">
           <h2>已发布版本</h2>
           <div id="versionList" class="muted">加载中…</div>
           <h3 style="margin-top:14px">两版对照（只读）</h3>

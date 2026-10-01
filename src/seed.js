@@ -20,6 +20,7 @@ function run() {
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const insRel = db.prepare('INSERT INTO relations (earlier_id, later_id, source, note) VALUES (?, ?, ?, ?)');
+  const insSd = db.prepare('INSERT INTO same_day_relations (event_a_id, event_b_id, source, note) VALUES (?, ?, ?, ?)');
 
   function addEvent(title, description, claims, rels = []) {
     const eid = insEvent.run(title, description).lastInsertRowid;
@@ -54,7 +55,13 @@ function run() {
   insRel.run(e1.eid, e2.eid, '李宝山、王秀兰二人口述一致', '');
   insRel.run(e2.eid, e3.eid, '张德福口述：“先有水渠，后有抽水机”', '');
 
-  console.log('演示数据已写入草稿区（3 个事件，含矛盾主张各 2 条，2 条先于关系）。');
+  // 演示「同日」关系：动员会当天晒谷场还开了民兵集合，两件事同日不同来源
+  const e4 = addEvent('晒谷场民兵集合', '动员会当天傍晚，大队民兵在晒谷场集合点名。', [
+    { precision: 'day', year: 1958, month: 9, day: 12, source: '赵长贵口述，2021-09-11 访谈', note: '受访人记得与修渠动员会是同一天' },
+  ]);
+  insSd.run(e1.eid, e4.eid, '李宝山、赵长贵二人均称同日', '');
+
+  console.log('演示数据已写入草稿区（4 个事件，含矛盾主张各 2 条，2 条先于关系、1 条同日关系）。');
   console.log(`当前已发布版本数：${latestVersionNo()}。请到 /editor 选择主张并发布。`);
 }
 

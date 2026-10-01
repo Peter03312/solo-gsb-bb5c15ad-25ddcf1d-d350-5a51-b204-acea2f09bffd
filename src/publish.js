@@ -12,6 +12,9 @@ function evaluateDraft(selectionList) {
   const relations = db
     .prepare('SELECT id, earlier_id AS earlierId, later_id AS laterId, source, note FROM relations ORDER BY id')
     .all();
+  const sameDayRelations = db
+    .prepare('SELECT id, event_a_id AS eventAId, event_b_id AS eventBId, source, note FROM same_day_relations ORDER BY id')
+    .all();
 
   const claimsById = new Map(claims.map((c) => [c.id, c]));
   const selected = new Map();
@@ -34,16 +37,18 @@ function evaluateDraft(selectionList) {
         type: 'bad_selection',
         eventIds: [eid],
         relationIds: [],
+        sameDayRelationIds: [],
         message: `事件「${titles.get(eid) || eid}」选定的主张不存在或不属于该事件`,
       })),
       events,
       claims,
       relations,
+      sameDayRelations,
     };
   }
 
-  const result = solve(events, selected, relations);
-  return { ...result, events, claims, relations, selected };
+  const result = solve(events, selected, relations, sameDayRelations);
+  return { ...result, events, claims, relations, sameDayRelations, selected };
 }
 
 // 发布一个新版本。selectionList: [{eventId, claimId}]
@@ -90,7 +95,7 @@ function publishVersion({ selectionList, baseVersionNo, editor, note }) {
       .run(newNo, base, String(editor || ''), String(note || ''));
     const versionId = verInfo.lastInsertRowid;
 
-    const { dates, events, selected, relations } = evalResult;
+    const { dates, events, selected, relations, sameDayRelations } = evalResult;
 
     const insEvent = db.prepare(`
       INSERT INTO version_events
@@ -143,6 +148,20 @@ function publishVersion({ selectionList, baseVersionNo, editor, note }) {
       insRel.run(versionId, r.id, r.earlierId, r.laterId, r.source || '', r.note || '', i);
     });
 
+    const insSd = db.prepare(`
+      INSERT INTO version_same_day_relations
+        (version_id, same_day_relation_id, event_a_id, event_b_id, source, note, sort_order)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `);
+    const sortedSd = [...sameDayRelations].sort(
+      (a, b) =>
+        eventOrder.get(a.eventAId) - eventOrder.get(b.eventAId) ||
+        eventOrder.get(a.eventBId) - eventOrder.get(b.eventBId)
+    );
+    sortedSd.forEach((r, i) => {
+      insSd.run(versionId, r.id, r.eventAId, r.eventBId, r.source || '', r.note || '', i);
+    });
+
     return newNo;
   });
 
@@ -161,7 +180,8 @@ function getVersionSummary(no) {
     .prepare(
       `SELECT v.version_no AS versionNo, v.parent_no AS parentNo, v.editor, v.note, v.published_at AS publishedAt,
               (SELECT COUNT(*) FROM version_events WHERE version_id = v.id) AS eventCount,
-              (SELECT COUNT(*) FROM version_relations WHERE version_id = v.id) AS relationCount
+              (SELECT COUNT(*) FROM version_relations WHERE version_id = v.id) AS relationCount,
+              (SELECT COUNT(*) FROM version_same_day_relations WHERE version_id = v.id) AS sameDayRelationCount
          FROM versions v WHERE v.version_no = ?`
     )
     .get(no);
@@ -190,7 +210,15 @@ function getVersionDetail(no) {
         ORDER BY sort_order`
     )
     .all(no);
-  return { ...summary, events: listEvents, relations: listRels };
+  const listSameDay = db
+    .prepare(
+      `SELECT same_day_relation_id AS sameDayRelationId, event_a_id AS eventAId,
+              event_b_id AS eventBId, source, note
+         FROM version_same_day_relations WHERE version_id = (SELECT id FROM versions WHERE version_no = ?)
+        ORDER BY sort_order`
+    )
+    .all(no);
+  return { ...summary, events: listEvents, relations: listRels, sameDayRelations: listSameDay };
 }
 
 module.exports = { publishVersion, evaluateDraft, latestVersionNo, getVersionDetail, getVersionSummary };

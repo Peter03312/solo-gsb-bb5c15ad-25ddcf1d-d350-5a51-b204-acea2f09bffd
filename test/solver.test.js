@@ -142,3 +142,100 @@ test('无边时各事件取区间起点', () => {
   assert.strictEqual(isoFromOrdinal(r.dates.get(1)), '1962-01-01');
   assert.strictEqual(isoFromOrdinal(r.dates.get(2)), '1962-10-01');
 });
+
+// ---------- 同日关系 ----------
+
+function sd(id, a, b, source = '') {
+  return { id, eventAId: a, eventBId: b, source };
+}
+
+test('同日组共享具体日期：粗精度事件被同日的日精度事件定到当天', () => {
+  const evs = events('A', 'B', 'C');
+  const rels = [{ id: 1, earlierId: 2, laterId: 3 }];
+  const sdr = [sd(1, 1, 2)];
+  const r = solve(
+    evs,
+    selectedMap([
+      sel(1, '1958-03-01', '1958-03-31'),
+      sel(2, '1958-03-15', '1958-03-15'),
+      sel(3, '1958-03-01', '1958-03-31'),
+    ]),
+    rels,
+    sdr
+  );
+  assert.strictEqual(r.ok, true, JSON.stringify(r.errors));
+  assert.strictEqual(isoFromOrdinal(r.dates.get(1)), '1958-03-15');
+  assert.strictEqual(isoFromOrdinal(r.dates.get(2)), '1958-03-15');
+  assert.strictEqual(isoFromOrdinal(r.dates.get(3)), '1958-03-16'); // 组间至少差一天
+  assert.deepStrictEqual(r.groups, [[1, 2]]);
+});
+
+test('同日组区间无交集报 same_day_interval', () => {
+  const evs = events('A', 'B');
+  const r = solve(
+    evs,
+    selectedMap([sel(1, '1958-01-01', '1958-01-31'), sel(2, '1958-12-01', '1958-12-31')]),
+    [],
+    [sd(1, 1, 2)]
+  );
+  assert.strictEqual(r.ok, false);
+  assert.strictEqual(r.errors[0].type, 'same_day_interval');
+  assert.deepStrictEqual(r.errors[0].sameDayRelationIds, [1]);
+});
+
+test('同日组内直接先于边报 same_day_conflict', () => {
+  const evs = events('A', 'B');
+  const r = solve(
+    evs,
+    selectedMap([sel(1, '1958-01-01', '1958-12-31'), sel(2, '1958-01-01', '1958-12-31')]),
+    [{ id: 7, earlierId: 1, laterId: 2 }],
+    [sd(9, 1, 2)]
+  );
+  assert.strictEqual(r.ok, false);
+  assert.strictEqual(r.errors[0].type, 'same_day_conflict');
+  assert.deepStrictEqual(new Set(r.errors[0].eventIds), new Set([1, 2]));
+  assert.ok(r.errors[0].relationIds.includes(7));
+  assert.ok(r.errors[0].sameDayRelationIds.includes(9));
+});
+
+test('同日组经中间事件的先于链（绕回同组另一成员）报 same_day_conflict', () => {
+  // 1 同日 3；1 先于 2 先于 3 => 折叠图 G{1,3} -> 2 -> G 且出入不同成员
+  const evs = events('A', 'B', 'C');
+  const r = solve(
+    evs,
+    selectedMap([
+      sel(1, '1958-01-01', '1958-12-31'),
+      sel(2, '1958-01-01', '1958-12-31'),
+      sel(3, '1958-01-01', '1958-12-31'),
+    ]),
+    [
+      { id: 1, earlierId: 1, laterId: 2 },
+      { id: 2, earlierId: 2, laterId: 3 },
+    ],
+    [sd(5, 1, 3)]
+  );
+  assert.strictEqual(r.ok, false);
+  assert.strictEqual(r.errors[0].type, 'same_day_conflict');
+  assert.ok(r.errors[0].eventIds.includes(1));
+  assert.ok(r.errors[0].eventIds.includes(3));
+});
+
+test('折叠组图成环但同日组出入同一成员，仍报 cycle', () => {
+  // 1 同日 2；1 先于 3、3 先于 1（从 G 的成员 1 出入，2 与 1 无先后之分）
+  const evs = events('A', 'B', 'C');
+  const r = solve(
+    evs,
+    selectedMap([
+      sel(1, '1958-01-01', '1958-12-31'),
+      sel(2, '1958-01-01', '1958-12-31'),
+      sel(3, '1958-01-01', '1958-12-31'),
+    ]),
+    [
+      { id: 1, earlierId: 1, laterId: 3 },
+      { id: 2, earlierId: 3, laterId: 1 },
+    ],
+    [sd(5, 1, 2)]
+  );
+  assert.strictEqual(r.ok, false);
+  assert.strictEqual(r.errors[0].type, 'cycle');
+});

@@ -1,6 +1,6 @@
 # 地方口述史事件年表（Oral Chronicle）
 
-供地方口述史团队本机使用的事件年表 Web 应用。编辑者录入**事件**、带**出处**的时间主张（可精确到年 / 月 / 日），以及事件之间的**「先于」关系**；同一事件可以保留多条互相矛盾的主张。发布时为每个事件选定一条主张，系统检查全部先后关系后生成**不可变版本**。访客只能看到最新已发布年表。
+供地方口述史团队本机使用的事件年表 Web 应用。编辑者录入**事件**、带**出处**的时间主张（可精确到年 / 月 / 日）、事件之间的**「先于」关系**与**「同日」关系**；同一事件可以保留多条互相矛盾的主张。发布时为每个事件选定一条主张，系统检查全部先后 / 同日关系后生成**不可变版本**。访客只能看到最新已发布年表。
 
 - 技术栈：Node.js（Express）+ SQLite（better-sqlite3）+ 浏览器原生界面（无需前端构建）
 
@@ -67,7 +67,7 @@ PORT=8080 EDITOR_TOKEN=my-secret npm start
 1. 右上角输入编辑者口令并保存。
 2. 在「事件与时间主张」中添加事件；每个事件可添加**任意多条**时间主张，每条必须填写出处（受访人 / 访谈时间 / 档案全宗 / 页码等），矛盾说法可用「考异备注」记录。
 3. 用单选按钮为**每个**事件选定一条拟发布主张（选择只保存在当前浏览器中）。
-4. 在「先于」关系中声明 A 严格先于 B，可附出处。
+4. 在「先于」关系中声明 A 严格先于 B，可附出处；在「同日」关系中声明两事件发生在同一天（不分先后，可附出处与备注），同日可经多条关系传递（A 同日 B、B 同日 C 即三者同日）。
 5. 「校验能否发布」先预览；「发布新版本」正式生成不可变快照。
 
 ### 发布规则（为什么会发布失败）
@@ -78,19 +78,23 @@ PORT=8080 EDITOR_TOKEN=my-secret npm start
 - 精确到**月**（如「1958 年 3 月」）：区间 `1958-03-01 ~ 1958-03-31`
 - 精确到**日**：区间即当天
 
-发布时，系统为每个事件在其选定主张的区间内确定一个**具体日期**，并要求每条「先于」关系两端**严格相差至少一天**（不允许同一天）。以下情况会拒绝发布，错误面板会标明涉事事件与关系（点击可定位），**上一已发布版本保持不变**：
+发布时，系统为每个事件在其选定主张的区间内确定一个**具体日期**，并要求每条「先于」关系两端**严格相差至少一天**（不允许同一天）。「同日」关系按连通分量折叠：**同一同日连通组共享一个具体日期**，该日期必须落在组内每个事件区间的交集中；不同同日组（及不在任何同日组中的事件）之间按「先于」关系严格相差至少一天。以下情况会拒绝发布，错误面板会标明涉事事件与关系（点击可定位到事件卡片 / 先于关系 / 同日关系），**上一已发布版本保持不变**：
 
 1. **缺少主张**：有事件未选定主张（或选定了已删除 / 不属于该事件的主张）；
-2. **关系成环**：「先于」关系构成有向环（含自环，自环在录入时即被禁止）；
-3. **时间无解**：区间内不存在满足全部严格先后关系的具体日期。错误信息会给出一条导致矛盾的见证链，例如「冬月会议 先于 春月会议」却分别主张 1958 年 12 月、1958 年 1 月。
+2. **关系成环**：折叠同日组后的「先于」关系构成有向环（含自环，自环在录入时即被禁止）；
+3. **同日组内先于链**：两个被同日关系连接的事件之间存在「先于」链（直接的「A 先于 B 且 A 同日 B」，或经中间事件绕回同组另一个成员）；
+4. **同日区间无交集**：同日组内各事件选定主张的覆盖日期区间没有任何公共日期；
+5. **时间无解**：区间内不存在满足全部严格先后关系的具体日期。错误信息会给出一条导致矛盾的见证链（可包含同日组），例如「冬月会议 先于 春月会议」却分别主张 1958 年 12 月、1958 年 1 月。
+
+预检响应还带 `sameDayGroups`：每个多事件同日连通组的事件 id 列表与共享求解日期，供编辑台核对。
 
 发布成功后得到递增版本号（第 1 版、第 2 版……），事件、所选主张（精度、区间、出处、考异）、关系与求解日期全部**复制进版本快照**；此后修改草稿不影响任何旧版本。访客页只展示当前最新版本。
 
 ### 时间无解时查看「改选建议」（只读）
 
-预检（「校验能否发布」）报出**时间无解**后，错误面板会出现「查看改选建议」按钮。改选建议在以下硬约束内求解：
+预检（「校验能否发布」）报出**时间无解**（含**同日组区间无交集**）后，错误面板会出现「查看改选建议」按钮。改选建议在以下硬约束内求解：
 
-- **只能在各事件的现有主张中另选一条**——不能新增 / 修改主张，**先于关系与主张覆盖日期区间一律不变**；
+- **只能在各事件的现有主张中另选一条**——不能新增 / 修改主张，**先于 / 同日关系与主张覆盖日期区间一律不变**；同日连通组按组为单位取主张组合（组内区间无公共日期的组合直接剔除）；
 - 目标：**改选事件数最少**的可行组合；平手时，按事件 ID 升序排列、比较各事件的主张 ID 序列，取字典序最小者；
 - 返回：需改选的事件数、**逐项变更**（事件 / 原主张 / 建议主张 / 出处 / 区间）与建议组合中每个事件的**求解日期**。
 
@@ -100,7 +104,7 @@ PORT=8080 EDITOR_TOKEN=my-secret npm start
 
 - 预检后草稿被他人增删改过，或**计算建议期间草稿修订号发生变化** → 返回 **409 `DRAFT_REVISION_STALE`**，不返回任何（可能过期的）建议，编辑台提示重新预检；
 - 选择缺失、事件重复、主张不存在或不属于该事件 → **400 `SELECTION_INVALID`**，逐项列明拒绝原因；
-- **关系成环**（`reason:"cycle"`）、**某事件没有任何主张**（`reason:"event_without_claims"`）、**现有主张的所有组合都不满足先后关系**（`reason:"no_feasible_combination"`）→ **422 `UNRESOLVABLE_BY_RESELECTION`**，明确说明无法靠改选解决，需补录主张或调整关系。
+- **关系成环**（`reason:"cycle"`）、**同日组内存在先于链**（`reason:"same_day_conflict"`）、**某事件没有任何主张**（`reason:"event_without_claims"`）、**现有主张的所有组合都不满足先后 / 同日关系**（`reason:"no_feasible_combination"`）→ **422 `UNRESOLVABLE_BY_RESELECTION`**，明确说明无法靠改选解决，需补录主张或调整关系；
 
 建议接口是纯只读计算，**不推进草稿修订号、不写草稿、不写发布版本**。
 
@@ -108,11 +112,11 @@ PORT=8080 EDITOR_TOKEN=my-secret npm start
 
 在编辑台右下「已发布版本」中，每版都有「预览并恢复为此版」按钮：
 
-1. **预览（不改数据）**：对话框列出该版的事件、每条事件的**被选时间主张**（精度 / 区间 / 出处 / 求解日期）与全部「先于」关系，并对照列出**当前草稿中将被替换**的内容（现有事件及其主张数、现有关系）与当前草稿修订号。预览只是只读核对，不落任何数据。
+1. **预览（不改数据）**：对话框列出该版的事件、每条事件的**被选时间主张**（精度 / 区间 / 出处 / 求解日期）、全部「先于」关系与**「同日」关系**，并对照列出**当前草稿中将被替换**的内容（现有事件及其主张数、现有两类关系）与当前草稿修订号。预览只是只读核对，不落任何数据。
 2. **确认**：请求回传**预览时的草稿修订号**与**当时最新版本号**。服务器在单个事务内：
    - 若该版本不存在 → 404；
    - 若确认前草稿被他人增删改过（修订号不一致）或最新版本号已变化 → **409 恢复冲突且不改任何数据**，需重新预览；
-   - 否则**原子替换整个草稿**：清空现有事件 / 主张 / 关系，按快照重建事件与「先于」关系，每个事件**只恢复该版被选定的那一条主张**（未选主张从不进快照，无法恢复）；返回**旧快照 id → 新草稿 id 的映射**（`events / claims / relations`）以及重建后的草稿全貌（即编辑台继续校验发布所需的**待选主张**）。编辑台会自动预选每条恢复的主张。
+   - 否则**原子替换整个草稿**：清空现有事件 / 主张 / 两类关系，按快照重建事件、「先于」关系与**「同日」关系**（同日端点映射到新事件 id 后仍按 id 升序归一化），每个事件**只恢复该版被选定的那一条主张**（未选主张从不进快照，无法恢复）；返回**旧快照 id → 新草稿 id 的映射**（`events / claims / relations / sameDayRelations`）以及重建后的草稿全貌（即编辑台继续校验发布所需的**待选主张**）。编辑台会自动预选每条恢复的主张。
 3. 恢复后可照常「校验能否发布」「发布新版本」，仍须遵守编辑口令、求解校验与 `baseVersionNo` 冲突约定（恢复不改变 `baseVersionNo`，也不会自动发布）。
 
 草稿区每一次增删改（事件 / 主张 / 关系，以及恢复本身）都会把**草稿修订号** +1；`GET /api/editor/state` 与恢复接口都会返回 `draftRevision`。**历史快照与访客年表在恢复过程中保持不变**。
@@ -127,10 +131,11 @@ PORT=8080 EDITOR_TOKEN=my-secret npm start
    - 谱系无法唯一证明的（例如两批完全独立的录入）→ 两版分别列为**未配对**，不会因标题相同而擅自配对。
 2. **人工一对一配对（仅本次对照有效）**：对话框可从两侧未配对事件中逐对指定配对；提交时**重复（同一事件出现多次）、跨版不存在、与已有确定配对冲突**都会被**整组拒绝**并逐项列出原因，不保存、不猜测。
 3. **逐项前后值**：每对事件展示标题、描述、主张日期精度、日期、区间起止、出处、考异备注、求解日期的旧版值 / 新版值与是否变化。
-4. **「先于」关系**：先按事件配对把两端映射到同一身份后再比较——
+4. **「先于」关系与「同日」关系**：先按事件配对把两端映射到同一身份后再比较（同日关系为**无向**，端点按事件 id 归一化后再匹配）——
    - 同端点对两侧各恰好一条：比较**出处、备注**，列为新增 / 移除 / 修改 / 无变化；
    - **同端点多条关系、无法唯一对应时只列增删，不推断修改**；
    - 端点事件未配对的关系，随未配对事件列入新增 / 移除。
+   - 对照响应中两类关系分别位于 `relations` 与 `sameDayRelations`，条目结构一致（同日关系用 `endpoints:[{fromEventId,toEventId,...}, ...]` 两个无序端点）。
 
 对照是**纯只读**操作：不写历史快照、不写当前草稿、不推进草稿修订号；人工配对不持久化。未知版本返回 404 `VERSION_NOT_FOUND`，既有版本查询接口的响应结构保持不变。
 
@@ -144,13 +149,13 @@ PORT=8080 EDITOR_TOKEN=my-secret npm start
 
 ### 访客（http://localhost:3000/）
 
-只渲染最新已发布版本：按系统确定的日期排列的时间线、每条事件所选主张的精度与出处、全部「先于」关系及其出处。草稿、未发布主张、未发布关系均不出现在任何公开接口中。尚无发布版本时仅显示「尚未发布」。
+只渲染最新已发布版本：按系统确定的日期排列的时间线（同日组事件自然排在一起）、每条事件所选主张的精度与出处、全部「先于」关系及其出处、全部「同日」关系及其出处 / 备注。草稿、未发布主张、未发布关系均不出现在任何公开接口中。尚无发布版本时仅显示「尚未发布」。
 
 ## 数据与备份
 
 - 单文件 SQLite 数据库：容器中位于 `/app/data/chronicle.db`（Docker 卷 `chronicle-data`），本机直跑位于 `./data/chronicle.db`。
 - 备份：停止写入后复制该 `.db` 文件即可（或使用 SQLite 的 `.backup` 命令）。
-- 历史版本表 `versions / version_events / version_relations` 只追加、不更新不删除，保证不可变。
+- 历史版本表 `versions / version_events / version_relations / version_same_day_relations` 只追加、不更新不删除，保证不可变。
 - 身份谱系表 `event_lineage` 同样只追加：每次从版本恢复草稿时记录「新草稿事件 id → 被恢复事件的身份根」，供版本对照在新 id 下延续事件身份；不设外键级联，草稿事件事后删除也不影响历史版本间的身份证明。
 
 ## 目录结构
@@ -161,16 +166,16 @@ src/
   routes.js     公开只读 API 与编辑者草稿/发布/恢复/版本对照 API
   db.js         SQLite 连接与建表（草稿区 + 版本快照区 + 草稿修订号 + 事件身份谱系）
   dates.js      年/月/日精度 → 覆盖区间（公历序数日）
-  solver.js     Tarjan 环检测 + 拓扑下界传播求严格先后可行解
-  suggest.js    时间无解时的只读改选建议：分支限界求最少改选组合 + 平手字典序
-  publish.js    发布事务：再校验 + 版本冲突检查 + 写不可变快照
+  solver.js     同日连通组折叠 + Tarjan 环检测（组内先于链 / 折叠成环）+ 拓扑下界传播求可行解
+  suggest.js    时间无解时的只读改选建议：以同日组为单位分支限界求最少改选组合 + 平手字典序
+  publish.js    发布事务：再校验 + 版本冲突检查 + 写不可变快照（含同日关系）
   draft.js      草稿全貌组装、草稿修订号与草稿变更事务
-  restore.js    恢复事务：预览只读 + 乐观并发校验 + 按快照原子重建草稿 + 写身份谱系
+  restore.js    恢复事务：预览只读 + 乐观并发校验 + 按快照原子重建草稿（含同日关系）+ 写身份谱系
   lineage.js    身份谱系读取 / 求根（对照判定 restore_lineage 配对）
-  diff.js       两版对照（只读）：身份配对 + 逐项前后值 + 关系增删改
+  diff.js       两版对照（只读）：身份配对 + 逐项前后值 + 先于 / 同日关系增删改
   seed.js       演示数据
 public/         访客页与编辑台（原生 HTML/CSS/JS）
-test/           node:test 单元与端到端测试（含成环、无解、409 冲突、恢复、版本对照）
+test/           node:test 单元与端到端测试（含同日求解/冲突、成环、无解、409 冲突、恢复、版本对照）
 ```
 
 ## 主要 HTTP API
@@ -186,25 +191,27 @@ test/           node:test 单元与端到端测试（含成环、无解、409 �
 - 事件：`POST /api/editor/events`、`PUT/DELETE /api/editor/events/:id`
 - 主张：`POST /api/editor/events/:id/claims`、`PUT/DELETE /api/editor/claims/:claimId`
 - 关系：`POST /api/editor/relations`、`DELETE /api/editor/relations/:id`
-- `POST /api/editor/validate` — 预校验（不落库）；响应额外带 `draftRevision`，供下一步查看改选建议
-- `POST /api/editor/suggest-reselection` — 时间无解时查看改选建议（**只读**：不写草稿 / 不推进修订号 / 不碰发布版本）；体含 `selection:[{eventId,claimId}]`（须逐事件、不缺不重、主张归属合法）与预检返回的 `draftRevision`
+- 同日关系（不分先后）：`POST /api/editor/same-day-relations`、`DELETE /api/editor/same-day-relations/:id`
+- `POST /api/editor/validate` — 预校验（不落库）；响应额外带 `draftRevision`（供下一步查看改选建议）与 `sameDayGroups`（同日连通组及共享日期）
+- `POST /api/editor/suggest-reselection` — 时间无解 / 同日区间无交集时查看改选建议（**只读**：不写草稿 / 不推进修订号 / 不碰发布版本）；体含 `selection:[{eventId,claimId}]`（须逐事件、不缺不重、主张归属合法）与预检返回的 `draftRevision`
   - 200：`{ok, code:"RESELECTION_SUGGESTION", draftRevision, changedEventCount, changes:[{eventId,title,fromClaimId,toClaimId,from,to}], selection:[{eventId,title,claimId,dateLabel,intervalStart,intervalEnd,source,resolvedDate}]}`
   - 400：`{code:"SELECTION_INVALID", missingEventIds, duplicateEventIds, invalidSelections:[{eventId,claimId,reason}]}`（`reason`：`event_not_found | claim_not_found | claim_belongs_to_other_event`）
   - 409：`{code:"DRAFT_REVISION_STALE", submittedDraftRevision, currentDraftRevision}` — 预检后或计算期间草稿已变，重新预检
-  - 422：`{code:"UNRESOLVABLE_BY_RESELECTION", reason:"cycle|event_without_claims|no_feasible_combination", message, eventIds, relationIds}`
+  - 422：`{code:"UNRESOLVABLE_BY_RESELECTION", reason:"cycle|same_day_conflict|event_without_claims|no_feasible_combination", message, eventIds, relationIds, sameDayRelationIds}`
 - `POST /api/editor/publish` — 发布；体含 `selection:[{eventId,claimId}]`、`baseVersionNo`、`editor`、`note`
-  - 422：`{errors:[{type:missing|cycle|temporal, eventIds, relationIds, message, detail}]}`
+  - 422：`{errors:[{type:missing|bad_selection|broken_relation|same_day_conflict|same_day_interval|cycle|temporal, eventIds, relationIds, sameDayRelationIds, message, detail}]}`
   - 409：`{code:"VERSION_CONFLICT", baseVersionNo, currentVersionNo, currentVersion}`
 - 从历史版本恢复草稿：
   - `POST /api/editor/restore/preview` — 体含 `versionNo`；只读返回该版事件/被选主张/关系、当前草稿将被替换的内容、`draftRevision` 与 `latestVersionNo`；版本不存在 → 404 `VERSION_NOT_FOUND`
-  - `POST /api/editor/restore/confirm` — 体含 `versionNo`、`draftRevision`、`expectedLatestVersionNo`（取预览返回值）；原子替换整个草稿，返回 `{restoredFromVersionNo, idMap:{events,claims,relations}, state}`（`state` 即新草稿全貌，含待选主张）
+  - `POST /api/editor/restore/confirm` — 体含 `versionNo`、`draftRevision`、`expectedLatestVersionNo`（取预览返回值）；原子替换整个草稿，返回 `{restoredFromVersionNo, idMap:{events,claims,relations,sameDayRelations}, state}`（`state` 即新草稿全貌，含待选主张）
     - 409：`{code:"RESTORE_CONFLICT", message, previewDraftRevision, currentDraftRevision, expectedLatestVersionNo, currentVersionNo}`
     - 404：`{code:"VERSION_NOT_FOUND"}`
 - 两版年表对照（只读）：`POST /api/editor/versions/diff` — 体含 `fromVersionNo`、`toVersionNo`（均为正整数版本号，可相同）与可选 `manualPairs:[{fromEventId,toEventId}]`（仅本次对照有效）；不推进修订号、不写任何数据
-  - 200：`{code:"VERSION_DIFF", readOnly, from,to, pairing:{autoPairCount, manualPairCount, pairs:[{fromEventId,toEventId,matchKind,fromTitle,toTitle}], unpairedFrom, unpairedTo}, eventDiffs:[{fromEventId,toEventId,matchKind,fromTitle,toTitle,changed, fields:[{field,from,to,changed}]}], relations:{unchanged,changed,added,removed}}`
+  - 200：`{code:"VERSION_DIFF", readOnly, from,to, pairing:{autoPairCount, manualPairCount, pairs:[{fromEventId,toEventId,matchKind,fromTitle,toTitle}], unpairedFrom, unpairedTo}, eventDiffs:[{fromEventId,toEventId,matchKind,fromTitle,toTitle,changed, fields:[{field,from,to,changed}]}], relations:{unchanged,changed,added,removed}, sameDayRelations:{unchanged,changed,added,removed}}`
     - `matchKind`：`same_id`（草稿 id 相同）/ `restore_lineage`（恢复谱系证明同身份）/ `manual`（本次人工配对）
     - 事件字段 `field` 依次为 `title, description, precision, dateLabel, intervalStart, intervalEnd, source, claimNote, resolvedDate`
-    - 关系条目：配对后两端 `earlier/later:{fromEventId,toEventId,fromTitle,toTitle}`；`changed/unchanged` 带 `fields:[{field:source|note,from,to,changed}]`；`added/removed` 带 `reason`（`absent_in_from | absent_in_to | endpoint_unpaired | ambiguous_endpoint_group`）与关系在两版中的 id
+    - 「先于」关系条目：配对后两端 `earlier/later:{fromEventId,toEventId,fromTitle,toTitle}`；`changed/unchanged` 带 `fields:[{field:source|note,from,to,changed}]`；`added/removed` 带 `reason`（`absent_in_from | absent_in_to | endpoint_unpaired | ambiguous_endpoint_group`）与关系在两版中的 id
+    - 「同日」关系条目：无向两端 `endpoints:[{fromEventId,toEventId,fromTitle,toTitle}, ...]`（按旧版 id 升序）；字段、`reason`、id 字段（`relationIdFrom/relationIdTo`，即两版 `sameDayRelationId`）与先于关系一致
   - 400：`{code:"PAIR_INVALID", invalidPairs:[{fromEventId,toEventId,reason}]}`，`reason`：`invalid_pair | duplicated_from | duplicated_to | duplicated_pair | from_event_not_found | to_event_not_found | conflict_with_pair`（冲突项另带 `existingFromEventId/existingToEventId`）
   - 400：`{code:"VERSION_NO_INVALID"}`（版本号非正整数）；404：`{code:"VERSION_NOT_FOUND", versionNo}`（任一版本未知）
 - 所有草稿增删改接口（含恢复确认）都会推进 `GET /api/editor/state` 返回的 `draftRevision`；预览、发布、改选建议与版本对照不推进。
@@ -235,6 +242,43 @@ curl -s -X POST "$BASE/api/editor/suggest-reselection" \
 ```
 
 建议只描述「把哪些事件改选到哪条现有主张」即可解，不代替发布：确认采纳后用建议的 `selection` 重新调用 `/api/editor/validate` 与 `/api/editor/publish`（仍须遵守 `baseVersionNo` 冲突约定）。
+
+## 同日关系 HTTP 调用示例
+
+编辑台已内置（右侧「『同日』关系」卡片）。直接调用 API：
+
+```bash
+TOKEN=editor            # 与 EDITOR_TOKEN 一致
+BASE=http://localhost:3000
+
+# 1) 录入一条同日关系（不分先后；端点顺序任意，服务端按事件 id 升序归一化存储）
+curl -s -X POST "$BASE/api/editor/same-day-relations" \
+  -H "Content-Type: application/json" -H "X-Editor-Token: $TOKEN" \
+  -d '{"eventAId":2,"eventBId":1,"source":"李宝山口述：两件事同一天发生","note":"考异：县志分记两处"}'
+# -> {"sameDayRelation":{"id":1,"eventAId":1,"eventBId":2,"source":"...","note":"..."}}
+# 录入 / 删除同日关系都会推进草稿修订号；一个事件不能与自身同日（400）。
+
+# 2) 草稿全貌（含同日关系与当前修订号）
+curl -s "$BASE/api/editor/state" -H "X-Editor-Token: $TOKEN"
+# -> {"draftRevision":N, ..., "relations":[...], "sameDayRelations":[{"id":1,"eventAId":1,"eventBId":2,...}]}
+
+# 3) 预检：同日连通组共享一个具体日期（sameDayGroups）；
+#    组内有先于链 -> same_day_conflict；组内区间无交集 -> same_day_interval；
+#    折叠后先于成环 -> cycle；这三类都会导致发布 422 且上一版本不变。
+curl -s -X POST "$BASE/api/editor/validate" \
+  -H "Content-Type: application/json" -H "X-Editor-Token: $TOKEN" \
+  -d '{"selection":[{"eventId":1,"claimId":1},{"eventId":2,"claimId":2}]}'
+# -> {"ok":true,"draftRevision":N,"preview":[...],"sameDayGroups":[{"eventIds":[1,2],"resolvedDate":"1958-03-15"}]}
+
+# 4) 删除同日关系
+curl -s -X DELETE "$BASE/api/editor/same-day-relations/1" -H "X-Editor-Token: $TOKEN"
+# -> {"deleted":1}
+```
+
+发布后，同日关系进入不可变快照：最新快照 `GET /api/public/chronicle` 与
+`GET /api/public/versions/:no` 的 `version.sameDayRelations`（及摘要 `sameDayRelationCount`）
+对访客公开；恢复历史版本时同日关系随快照重建（端点映射为新事件 id），
+两版对照在响应的 `sameDayRelations` 中给出其新增 / 移除 / 修改 / 无变化。
 
 ## 两版对照 HTTP 调用示例
 
@@ -272,7 +316,18 @@ curl -s -X POST "$BASE/api/editor/versions/diff" \
 # -> 404 {"code":"VERSION_NOT_FOUND","versionNo":99}
 ```
 
-## 本轮变动（两版年表对照）
+## 本轮变动（「同日」关系）
+
+- 新增**「同日」关系**：两事件发生在同一天、两端不分先后（可附出处与备注），录入时端点按事件 id 升序归一化；同日关系具有传递性，求解时按连通分量折叠，**同组共享一个具体日期**（取组内各事件选定主张区间的交集），组间「先于」仍须严格相差至少一天。
+- 新增草稿表 `same_day_relations` 与只追加快照表 `version_same_day_relations`（`CREATE TABLE IF NOT EXISTS`，旧库直接启动即可）；新增接口 `POST/DELETE /api/editor/same-day-relations`，录入 / 删除均推进草稿修订号；`GET /api/editor/state` 与所有快照 / 对照 / 恢复响应新增 `sameDayRelations`（摘要新增 `sameDayRelationCount`），均为**附加字段**，既有响应结构无破坏。
+- 求解器（`src/solver.js`）扩展为「同日组折叠 → 区间交集 → Tarjan 组成环 → 拓扑下界传播」；新增两类拒绝原因：`same_day_conflict`（同日组内存在先于链，含直接边与折叠后绕回同组另一成员的环）、`same_day_interval`（同组区间无公共日期）；折叠后纯组间成环仍报 `cycle`。错误对象统一带 `eventIds / relationIds / sameDayRelationIds`，编辑台点击错误可定位到事件卡片与两类关系行。
+- 改选建议（`src/suggest.js`）改为**以同日连通组为单位**组合搜索：组内区间无交集的主张组合直接剔除，再求改选事件数最少、平手按事件 id 升序主张序列字典序最小的组合；同日组先于链 / 折叠成环等结构性矛盾返回 422 `same_day_conflict / cycle`（无法靠改选解决）。
+- 发布把同日关系复制进不可变快照；恢复历史版本时同日关系随事件 id 映射重建（`idMap.sameDayRelations`）；两版对照新增 `sameDayRelations` 分区，按无向端点对比较出处 / 备注，同端点多条无法唯一对应时只列增删，端点未配对随事件列增删。
+- 编辑台新增「『同日』关系」卡片（录入 / 删除 / 出处 / 备注）、校验错误定位到同日关系行、预检通过展示同日组、恢复与对照对话框展示同日关系；访客年表新增「事件间『同日』关系」区。
+- 新增测试 `test/same-day.test.js`（18 个：录入与修订号、归一化、传递组、共享日期、三类拒绝、快照 / 访客、恢复重建 + 谱系对照、同日关系对照四类与歧义增删、改选建议的可行 / 422 / 平手）；全部既有测试保持通过。
+- 原有「先于」、发布（含 `baseVersionNo` 409 约定）、改选建议、恢复与版本对照接口约定全部兼容。
+
+## 上一轮变动（两版年表对照）
 
 - 新增只读接口 `POST /api/editor/versions/diff` 与对照模块 `src/diff.js`：按「草稿 id → 恢复谱系」判定事件身份，逐项给出事件标题 / 描述 / 主张精度 / 日期 / 区间 / 出处 / 考异 / 求解日期前后值；关系按配对后端点比较新增、移除、修改（出处、备注），同端点多条无法唯一对应时只列增删；支持仅本次有效的一对一人工配对并逐项拒绝非法配对，绝不按标题相似度猜测。
 - 新增只追加表 `event_lineage` 与 `src/lineage.js`：恢复事务（`src/restore.js`）在按快照重建草稿时记录「新草稿事件 id → 被恢复事件身份根」，使恢复后再次发布的事件即使拿到新数据库 id，仍可在旧版本对照中延续身份（支持多次恢复、跨版追溯）。

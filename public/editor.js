@@ -28,7 +28,7 @@ const store = {
   clearSelections() { localStorage.removeItem('selections'); },
 };
 
-let state = { events: [], relations: [], currentVersionNo: 0 };
+let state = { events: [], relations: [], sameDayRelations: [], currentVersionNo: 0 };
 let baseVersionNo = 0; // 发起修改时所基于的版本号
 let conflictData = null;
 // 最近一次预检结果：时间无解时据此查看改选建议（须带回当时的草稿修订号）
@@ -162,6 +162,9 @@ function renderRelations() {
   const opts = state.events.map((e) => `<option value="${e.id}">${esc(e.title)}</option>`).join('');
   $('#relEarlier').innerHTML = opts;
   $('#relLater').innerHTML = opts;
+  $('#sdA').innerHTML = opts;
+  $('#sdB').innerHTML = opts;
+  if (state.events.length > 1) $('#sdB').selectedIndex = 1;
 
   $('#relList').innerHTML = state.relations.length
     ? state.relations.map((r) => `
@@ -174,6 +177,18 @@ function renderRelations() {
           ${r.note ? `<div class="muted">${esc(r.note)}</div>` : ''}
         </div>`).join('')
     : '<p class="muted">尚无先后关系。</p>';
+
+  $('#sdList').innerHTML = state.sameDayRelations.length
+    ? state.sameDayRelations.map((r) => `
+        <div class="rel-line" id="sd-line-${r.id}">
+          <strong>${esc(titleOf(r.eventAId))}</strong>
+          <span class="badge prec">同日</span>
+          <strong>${esc(titleOf(r.eventBId))}</strong>
+          <button class="danger" data-del-sd="${r.id}" type="button" style="float:right">删除</button>
+          ${r.source ? `<div class="source"><b>出处：</b>${esc(r.source)}</div>` : ''}
+          ${r.note ? `<div class="muted">${esc(r.note)}</div>` : ''}
+        </div>`).join('')
+    : '<p class="muted">尚无同日关系。</p>';
 }
 
 async function loadState() {
@@ -357,10 +372,22 @@ function renderDiff(d) {
       ${renderRelationChanges(d)}
     </div>
 
+    <div class="card" style="background:#fff">
+      <h3>「同日」关系：变更</h3>
+      ${renderSameDayChanges(d)}
+    </div>
+
     <details class="card" style="background:#fff">
       <summary><b>「先于」关系：无变化（${d.relations.unchanged.length}）</b></summary>
       <div style="margin-top:8px">
         ${d.relations.unchanged.length ? `<ul class="error-list" style="cursor:default;text-decoration:none">${d.relations.unchanged.map((r) => `<li>${renderRelationLine(r, false)}</li>`).join('')}</ul>` : '<p class="muted">无</p>'}
+      </div>
+    </details>
+
+    <details class="card" style="background:#fff">
+      <summary><b>「同日」关系：无变化（${(d.sameDayRelations?.unchanged || []).length}）</b></summary>
+      <div style="margin-top:8px">
+        ${(d.sameDayRelations?.unchanged || []).length ? `<ul class="error-list" style="cursor:default;text-decoration:none">${d.sameDayRelations.unchanged.map((r) => `<li>${renderSameDayLine(r, false)}</li>`).join('')}</ul>` : '<p class="muted">无</p>'}
       </div>
     </details>`;
 }
@@ -442,6 +469,46 @@ function renderRelationChanges(d) {
       : '<p class="muted">无</p>'}`;
 }
 
+// ---------- 同日关系对照展示（无向） ----------
+function sameDayEndpointPair(eps) {
+  return eps.map(endpointText).join(' <span class="badge prec">同日</span> ');
+}
+
+function renderSameDayLine(r, isChanged) {
+  const fieldNotes = isChanged && r.fields
+    ? r.fields.filter((f) => f.changed).map((f) =>
+        `<span class="muted">${f.field === 'source' ? '出处' : '备注'}：</span>
+         <span class="diff-from">${esc(f.from || '（空）')}</span> →
+         <span class="diff-to">${esc(f.to || '（空）')}</span>`).join('；')
+    : '';
+  return `${sameDayEndpointPair(r.endpoints)}
+          <div class="muted">关系 id：旧 #${r.relationIdFrom == null ? '—' : r.relationIdFrom} → 新 #${r.relationIdTo == null ? '—' : r.relationIdTo}${r.source ? '；出处：' + esc(r.source) : ''}${r.note ? '；备注：' + esc(r.note) : ''}</div>
+          ${fieldNotes ? `<div>${fieldNotes}</div>` : ''}`;
+}
+
+function renderSameDayBulk(list, dir) {
+  if (!list || !list.length) return '<p class="muted">无</p>';
+  return `<ul class="error-list" style="cursor:default;text-decoration:none">
+    ${list.map((r) => `<li class="diff-${dir}">
+      ${renderSameDayLine(r, false)}
+      <div class="muted">判定：${REL_REASON_TEXT[r.reason] || r.reason}${r.groupSize ? `（旧版 ${r.groupSize.from} 条 / 新版 ${r.groupSize.to} 条）` : ''}</div>
+    </li>`).join('')}
+  </ul>`;
+}
+
+function renderSameDayChanges(d) {
+  const sd = d.sameDayRelations || { changed: [], added: [], removed: [] };
+  return `
+    <h4 class="diff-to">新增（${sd.added.length}）</h4>
+    ${renderSameDayBulk(sd.added, 'to')}
+    <h4 class="diff-from">移除（${sd.removed.length}）</h4>
+    ${renderSameDayBulk(sd.removed, 'from')}
+    <h4>修改（同端点唯一对应，出处 / 备注变化；${sd.changed.length}）</h4>
+    ${sd.changed.length
+      ? `<ul class="error-list" style="cursor:default;text-decoration:none">${sd.changed.map((r) => `<li>${renderSameDayLine(r, true)}</li>`).join('')}</ul>`
+      : '<p class="muted">无</p>'}`;
+}
+
 async function addManualPair() {
   const fromEventId = Number($('#manualFrom').value);
   const toEventId = Number($('#manualTo').value);
@@ -479,11 +546,18 @@ async function doValidate() {
     if (!data.ok) {
       renderSolverErrors(data.errors, { suggestRevision: data.draftRevision });
     } else {
+      const groupNote = data.sameDayGroups && data.sameDayGroups.length
+        ? `<div class="muted" style="margin-top:6px">同日连通组（共享日期）：
+             <ul class="error-list" style="cursor:default;text-decoration:none">
+               ${data.sameDayGroups.map((g) => `<li>${esc(g.resolvedDate)} — ${g.eventIds.map((id) => `「${esc(titleOf(id))}」`).join('、')}</li>`).join('')}
+             </ul>
+           </div>`
+        : '';
       showPublishResult('ok', `
         <b>校验通过，可以发布。</b>系统确定的具体日期：
         <ol style="margin:6px 0">
           ${data.preview.map((p) => `<li>${esc(p.resolvedDate)} — ${esc(p.title)}（主张区间 ${p.intervalStart} ~ ${p.intervalEnd}）</li>`).join('')}
-        </ol>`);
+        </ol>${groupNote}`);
     }
   } catch (e) {
     showPublishResult('error', esc(e.message));
@@ -491,14 +565,29 @@ async function doValidate() {
 }
 
 function renderSolverErrors(errors, { suggestRevision = null } = {}) {
-  const typeName = { missing: '缺少主张', cycle: '关系成环', temporal: '时间无解', 'bad_selection': '主张选择无效', broken_relation: '关系失效' };
-  const hasTemporal = errors.some((er) => er.type === 'temporal');
-  const items = errors.map((er, i) => {
-    const targets = [...new Set(er.eventIds.map((id) => `#event-card-${id}`))].join(',');
-    return `<li data-targets="${targets}" title="点击定位事件">
+  const typeName = {
+    missing: '缺少主张',
+    cycle: '关系成环',
+    temporal: '时间无解',
+    'bad_selection': '主张选择无效',
+    broken_relation: '关系失效',
+    same_day_conflict: '同日组内先于冲突',
+    same_day_interval: '同日区间无交集',
+  };
+  const hasTemporal = errors.some((er) => er.type === 'temporal' || er.type === 'same_day_interval');
+  const items = errors.map((er) => {
+    const targets = [
+      ...new Set([
+        ...(er.eventIds || []).map((id) => `#event-card-${id}`),
+        ...(er.relationIds || []).map((id) => `#rel-line-${id}`),
+        ...(er.sameDayRelationIds || []).map((id) => `#sd-line-${id}`),
+      ]),
+    ].join(',');
+    return `<li data-targets="${targets}" title="点击定位涉事事件 / 关系">
       <b>[${typeName[er.type] || er.type}]</b> ${esc(er.message)}
       ${er.detail ? `<div class="muted">涉事关系：${esc(er.detail)}</div>` : ''}
-      ${er.relationIds && er.relationIds.length ? `<div class="muted">涉事关系 id：${er.relationIds.join(', ')}</div>` : ''}
+      ${er.relationIds && er.relationIds.length ? `<div class="muted">涉事先于关系 id：${er.relationIds.join(', ')}</div>` : ''}
+      ${er.sameDayRelationIds && er.sameDayRelationIds.length ? `<div class="muted">涉事同日关系 id：${er.sameDayRelationIds.join(', ')}</div>` : ''}
     </li>`;
   }).join('');
   const suggestBar = hasTemporal && suggestRevision !== null
@@ -682,6 +771,15 @@ function renderRestorePreview(p) {
         </li>`).join('')
     : '<li class="muted">该版未记录「先于」关系。</li>';
 
+  const snapSd = (p.snapshot.sameDayRelations || []).length
+    ? p.snapshot.sameDayRelations.map((r) => `
+        <li>${esc(snapTitle.get(r.eventAId) || '#' + r.eventAId)}
+          <span class="badge prec">同日</span>
+          ${esc(snapTitle.get(r.eventBId) || '#' + r.eventBId)}
+          ${r.source ? `<span class="muted">（出处：${esc(r.source)}）</span>` : ''}
+        </li>`).join('')
+    : '<li class="muted">该版未记录「同日」关系。</li>';
+
   const curTitle = new Map(state.events.map((e) => [e.id, e.title]));
   const curEvents = p.currentDraft.events.length
     ? p.currentDraft.events.map((e) => `
@@ -692,6 +790,11 @@ function renderRestorePreview(p) {
         .map((r) => `<li>${esc(curTitle.get(r.earlierId) || '#' + r.earlierId)} 先于 ${esc(curTitle.get(r.laterId) || '#' + r.laterId)}</li>`)
         .join('')
     : '<li class="muted">（草稿当前没有关系）</li>';
+  const curSd = (p.currentDraft.sameDayRelations || []).length
+    ? p.currentDraft.sameDayRelations
+        .map((r) => `<li>${esc(curTitle.get(r.eventAId) || '#' + r.eventAId)} 同日 ${esc(curTitle.get(r.eventBId) || '#' + r.eventBId)}</li>`)
+        .join('')
+    : '<li class="muted">（草稿当前没有同日关系）</li>';
 
   const curNote = state.currentVersionNo === 0
     ? '草稿尚未发布过版本'
@@ -699,20 +802,25 @@ function renderRestorePreview(p) {
 
   $('#restoreBody').innerHTML = `
     <p>将把<b>整个草稿</b>替换为<b>第 ${p.versionNo} 版</b>的快照内容：
-       ${p.snapshot.events.length} 个事件、${p.snapshot.relations.length} 条「先于」关系；
+       ${p.snapshot.events.length} 个事件、${p.snapshot.relations.length} 条「先于」关系、${(p.snapshot.sameDayRelations || []).length} 条「同日」关系；
        每个事件只带回该版<b>被选定的那一条主张</b>（其余主张不会恢复，恢复后可继续补录）。</p>
     <div class="card" style="background:#fff">
       <h3>第 ${p.versionNo} 版将恢复的内容</h3>
       <ul class="error-list" style="cursor:default;text-decoration:none">${snapEvents}</ul>
       <h3>「先于」关系</h3>
       <ul class="error-list" style="cursor:default;text-decoration:none">${snapRels}</ul>
+      <h3>「同日」关系</h3>
+      <ul class="error-list" style="cursor:default;text-decoration:none">${snapSd}</ul>
     </div>
     <div class="card" style="background:#fff">
       <h3>当前草稿中将被替换的内容</h3>
       <p class="muted">${curNote}；草稿修订号 #${p.draftRevision}。以下内容会被整体覆盖（历史已发布版本与访客年表不变）：</p>
       <div class="grid2" style="gap:10px">
         <div><b>事件（${p.currentDraft.events.length}）</b><ul class="error-list" style="cursor:default;text-decoration:none">${curEvents}</ul></div>
-        <div><b>关系（${p.currentDraft.relations.length}）</b><ul class="error-list" style="cursor:default;text-decoration:none">${curRels}</ul></div>
+        <div>
+          <b>先于关系（${p.currentDraft.relations.length}）</b><ul class="error-list" style="cursor:default;text-decoration:none">${curRels}</ul>
+          <b>同日关系（${(p.currentDraft.sameDayRelations || []).length}）</b><ul class="error-list" style="cursor:default;text-decoration:none">${curSd}</ul>
+        </div>
       </div>
     </div>
     <p class="muted">确认后系统会原子替换草稿；若确认前草稿被他人改动或有新版本发布，将返回冲突且<b>不改任何数据</b>，届时请重新预览。
@@ -863,6 +971,28 @@ async function onClick(e) {
   const delRel = t.dataset && t.dataset.delRel;
   if (delRel) {
     await api('DELETE', `/api/editor/relations/${delRel}`);
+    await loadState();
+    return;
+  }
+
+  if (t.id === 'btnAddSd') {
+    const eventAId = Number($('#sdA').value);
+    const eventBId = Number($('#sdB').value);
+    if (eventAId === eventBId) { showGlobal('error', '一个事件不能与自身同日。'); return; }
+    try {
+      await api('POST', '/api/editor/same-day-relations', {
+        eventAId, eventBId, source: $('#sdSource').value, note: $('#sdNote').value,
+      });
+      $('#sdSource').value = '';
+      $('#sdNote').value = '';
+      await loadState();
+    } catch (err) { showGlobal('error', esc(err.message)); }
+    return;
+  }
+
+  const delSd = t.dataset && t.dataset.delSd;
+  if (delSd) {
+    await api('DELETE', `/api/editor/same-day-relations/${delSd}`);
     await loadState();
   }
 }

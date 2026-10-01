@@ -217,6 +217,43 @@ router.delete('/api/editor/relations/:id', (req, res) => {
   res.json({ deleted: id });
 });
 
+// ---- 「同日」关系 CRUD（不分先后；端点按事件 id 归一化存储） ----
+router.post('/api/editor/same-day-relations', (req, res) => {
+  let a = Number(req.body.eventAId);
+  let b = Number(req.body.eventBId);
+  // 兼容别名 eventId/otherEventId 与 earlierId/laterId 风格的调用
+  if (!Number.isInteger(a) || !Number.isInteger(b)) {
+    const x = Number(req.body.eventId);
+    const y = Number(req.body.otherEventId);
+    if (Number.isInteger(x) && Number.isInteger(y)) { a = x; b = y; }
+  }
+  if (!Number.isInteger(a) || !Number.isInteger(b)) {
+    throw badRequest('eventAId 与 eventBId 必须是事件 id 整数');
+  }
+  if (a === b) throw badRequest('一个事件不能与自身同日');
+  if (a > b) [a, b] = [b, a]; // 不分先后：统一按 id 升序存储
+  getEventOr404(a);
+  getEventOr404(b);
+  const source = optionalString(req.body, 'source', 1000);
+  const note = optionalString(req.body, 'note', 2000);
+  const newId = draftMutation((db) =>
+    db.prepare('INSERT INTO same_day_relations (event_a_id, event_b_id, source, note) VALUES (?, ?, ?, ?)')
+      .run(a, b, source, note).lastInsertRowid
+  );
+  const row = getDb().prepare('SELECT * FROM same_day_relations WHERE id = ?').get(newId);
+  res.status(201).json({
+    sameDayRelation: { id: row.id, eventAId: row.event_a_id, eventBId: row.event_b_id, source: row.source, note: row.note },
+  });
+});
+
+router.delete('/api/editor/same-day-relations/:id', (req, res) => {
+  const id = Number(req.params.id);
+  const row = getDb().prepare('SELECT * FROM same_day_relations WHERE id = ?').get(id);
+  if (!row) throw { status: 404, message: `同日关系 ${id} 不存在` };
+  draftMutation((db) => db.prepare('DELETE FROM same_day_relations WHERE id = ?').run(id));
+  res.json({ deleted: id });
+});
+
 // ---- 发布前预检：不落库，返回求解错误或可行日期 ----
 router.post('/api/editor/validate', (req, res) => {
   const selectionList = normalizeSelection(req.body);
@@ -224,7 +261,7 @@ router.post('/api/editor/validate', (req, res) => {
   if (!result.ok) {
     return res.json({ ok: false, draftRevision: getDraftRevision(), errors: result.errors });
   }
-  const { dates, events, selected } = result;
+  const { dates, events, selected, groups } = result;
   const preview = events
     .map((ev) => {
       const sel = selected.get(ev.id);
@@ -238,7 +275,12 @@ router.post('/api/editor/validate', (req, res) => {
       };
     })
     .sort((a, b) => a.resolvedDate.localeCompare(b.resolvedDate));
-  res.json({ ok: true, draftRevision: getDraftRevision(), preview });
+  // 同日连通组（只含多事件组）：组内事件共享同一个求解日期
+  const sameDayGroups = groups.map((memberIds) => ({
+    eventIds: memberIds,
+    resolvedDate: iso(dates.get(memberIds[0])),
+  }));
+  res.json({ ok: true, draftRevision: getDraftRevision(), preview, sameDayGroups });
 });
 
 function iso(ord) {
