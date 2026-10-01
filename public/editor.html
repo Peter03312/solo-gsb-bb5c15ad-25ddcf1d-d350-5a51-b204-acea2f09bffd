@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>年表编辑台 · 地方口述史</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <h1>年表编辑台</h1>
+    <span class="sub" id="versionTag">—</span>
+    <span class="spacer"></span>
+    <input type="password" id="tokenInput" placeholder="编辑者口令" style="width:150px" />
+    <button class="secondary" id="tokenSave" type="button">保存口令</button>
+    <a class="muted" href="/">← 返回访客年表</a>
+  </header>
+
+  <main class="container">
+    <div id="globalMsg"></div>
+
+    <div class="card">
+      <h2>发布</h2>
+      <p class="muted">
+        为<b>每个</b>事件选定一条主张（允许彼此矛盾的主张并存，但发布只能各选一条）。
+        粗精度日期按覆盖区间计算；只有全部事件都能在区间内取到满足严格先后关系的具体日期，才会生成不可变新版本。
+        校验失败或版本冲突时，上一版本保持不变。
+      </p>
+      <div class="row">
+        <div class="field" style="max-width:220px">
+          <label>编辑者署名</label>
+          <input type="text" id="editorName" placeholder="如：志愿者小王" />
+        </div>
+        <div class="field" style="max-width:320px">
+          <label>版本说明（可选）</label>
+          <input type="text" id="publishNote" placeholder="如：补入修水渠相关事件" />
+        </div>
+        <button id="btnValidate" type="button" class="secondary">校验能否发布</button>
+        <button id="btnPublish" type="button">发布新版本</button>
+      </div>
+      <div id="publishResult" style="margin-top:10px"></div>
+    </div>
+
+    <div class="grid2">
+      <section>
+        <div class="card">
+          <h2>事件与时间主张</h2>
+          <div id="eventList"></div>
+
+          <h3 style="margin-top:18px">新增事件</h3>
+          <div class="row">
+            <div class="field"><label>事件标题</label><input type="text" id="newEventTitle" placeholder="如：老桥落成" /></div>
+          </div>
+          <label style="margin-top:8px">事件描述（可选）</label>
+          <textarea id="newEventDesc"></textarea>
+          <div style="margin-top:8px"><button id="btnAddEvent" type="button">添加事件</button></div>
+        </div>
+      </section>
+
+      <section>
+        <div class="card">
+          <h2>「先于」关系</h2>
+          <p class="muted">声明 A 严格先于 B（两个事件不能是同一天）。</p>
+          <div id="relList"></div>
+          <h3 style="margin-top:14px">新增关系</h3>
+          <div class="row">
+            <div class="field"><label>较早事件</label><select id="relEarlier"></select></div>
+            <div style="padding-bottom:6px">先于</div>
+            <div class="field"><label>较晚事件</label><select id="relLater"></select></div>
+          </div>
+          <label style="margin-top:8px">出处（可选）</label>
+          <input type="text" id="relSource" />
+          <div style="margin-top:8px"><button id="btnAddRel" type="button">添加关系</button></div>
+        </div>
+
+        <div class="card">
+          <h2>已发布版本</h2>
+          <div id="versionList" class="muted">加载中…</div>
+          <h3 style="margin-top:14px">两版对照（只读）</h3>
+          <p class="muted">选择两份已发布年表，查看事件、被选时间主张与「先于」关系的前后变更；不修改历史快照与当前草稿。</p>
+          <div class="row">
+            <div class="field"><label>旧版</label><select id="diffFrom"></select></div>
+            <div class="field"><label>新版</label><select id="diffTo"></select></div>
+            <div style="flex:0 0 auto;padding-bottom:2px">
+              <button class="secondary" id="btnDiff" type="button">对照两版</button>
+            </div>
+          </div>
+        </div>
+      </section>
+    </div>
+  </main>
+
+  <!-- 版本冲突对话框 -->
+  <dialog id="conflictDialog">
+    <div class="d-head">⚠ 版本冲突：已有更新的发布版本</div>
+    <div class="d-body" id="conflictBody"></div>
+    <div class="d-foot">
+      <button class="secondary" id="conflictCancel" type="button">取消，稍后处理</button>
+      <button id="conflictReload" type="button">刷新到最新版本并重新确认选择</button>
+    </div>
+  </dialog>
+
+  <!-- 时间无解：改选建议对话框（只读） -->
+  <dialog id="suggestDialog" style="width:min(760px,94vw)">
+    <div class="d-head" style="background:var(--paper);color:var(--accent-dark);border-bottom-color:var(--line)">
+      💡 改选建议（预检为「时间无解」时；只读，不改草稿或发布版本）
+    </div>
+    <div class="d-body" id="suggestBody">加载中…</div>
+    <div class="d-foot">
+      <button class="secondary" id="suggestCancel" type="button">关闭</button>
+      <button id="suggestApply" type="button" disabled>应用到本机选择（不写服务器）</button>
+    </div>
+  </dialog>
+
+  <!-- 从历史版本恢复草稿对话框 -->
+  <dialog id="restoreDialog">    <div class="d-head" style="background:var(--paper);color:var(--accent-dark);border-bottom-color:var(--line)">↩ 从已发布版本恢复草稿（预览，尚未改动数据）</div>
+    <div class="d-body" id="restoreBody">加载预览…</div>
+    <div class="d-foot">
+      <button class="secondary" id="restoreCancel" type="button">取消</button>
+      <button id="restoreConfirm" type="button">确认用此版本替换整个草稿</button>
+    </div>
+  </dialog>
+
+  <!-- 两版年表对照对话框（只读） -->
+  <dialog id="diffDialog" style="width:min(920px,96vw)">
+    <div class="d-head" style="background:var(--paper);color:var(--accent-dark);border-bottom-color:var(--line)">
+      🔍 两版年表对照（只读，不改历史快照与当前草稿）
+    </div>
+    <div class="d-body" id="diffBody">加载对照…</div>
+    <div class="d-foot">
+      <button class="secondary" id="diffCancel" type="button">关闭</button>
+    </div>
+  </dialog>
+
+  <script src="/editor.js"></script>
+</body>
+</html>
