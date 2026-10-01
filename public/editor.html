@@ -23,8 +23,8 @@
       <h2>发布</h2>
       <p class="muted">
         为<b>每个</b>事件选定一条主张（允许彼此矛盾的主张并存，但发布只能各选一条）。
-        粗精度日期按覆盖区间计算；只有全部事件都能在区间内取到满足严格先后关系的具体日期，才会生成不可变新版本。
-        校验失败或版本冲突时，上一版本保持不变。
+        粗精度日期按覆盖区间计算；系统在区间内为每个事件确定具体日期，使全部「先于」严格相差至少一天、同一「同日」连通组共享同一天。
+        组内存在先于、组内区间无共同交集或折叠后成环都会拒绝发布；校验失败或版本冲突时，上一版本保持不变。
       </p>
       <div class="row">
         <div class="field" style="max-width:220px">
@@ -71,6 +71,23 @@
           <label style="margin-top:8px">出处（可选）</label>
           <input type="text" id="relSource" />
           <div style="margin-top:8px"><button id="btnAddRel" type="button">添加关系</button></div>
+        </div>
+
+        <div class="card">
+          <h2>「同日」关系</h2>
+          <p class="muted">声明两个事件发生在<b>同一天</b>（两端不分先后）。同日可经多条关系连成组：同组事件共享同一个具体日期；同组内不能再有「先于」要求，各事件选定主张的日期区间也必须有共同交集。</p>
+          <div id="sdrList"></div>
+          <h3 style="margin-top:14px">新增同日关系</h3>
+          <div class="row">
+            <div class="field"><label>事件一端</label><select id="sdrA"></select></div>
+            <div style="padding-bottom:6px">同日</div>
+            <div class="field"><label>事件另一端</label><select id="sdrB"></select></div>
+          </div>
+          <label style="margin-top:8px">出处（可选）</label>
+          <input type="text" id="sdrSource" />
+          <label style="margin-top:8px">备注（可选）</label>
+          <input type="text" id="sdrNote" />
+          <div style="margin-top:8px"><button id="btnAddSdr" type="button">添加同日关系</button></div>
         </div>
 
         <div class="card">

@@ -29,7 +29,7 @@ async function main() {
     const v = data.version;
     $('#versionTag').textContent = `第 ${v.versionNo} 版 · 发布于 ${v.publishedAt.replace('T', ' ').slice(0, 16)} UTC · 编辑：${esc(v.editor || '匿名')}`;
     $('#chronicle').style.display = 'grid';
-    $('#caveat').textContent = `本页为第 ${v.versionNo} 版不可变快照，共 ${v.eventCount} 个事件、${v.relationCount} 条先后关系。`;
+    $('#caveat').textContent = `本页为第 ${v.versionNo} 版不可变快照，共 ${v.eventCount} 个事件、${v.relationCount} 条先后关系、${v.sameDayRelationCount || 0} 条同日关系。`;
 
     const titleById = new Map(v.events.map((e) => [e.eventId, e.title]));
 
@@ -57,6 +57,21 @@ async function main() {
             ${r.source ? `<div class="source"><b>出处：</b>${esc(r.source)}</div>` : ''}
           </div>`).join('')
       : '<p class="muted">本版未记录先于关系。</p>';
+
+    const sdrs = v.sameDayRelations || [];
+    const sdrBox = $('#sameDayRelations');
+    if (sdrBox) {
+      sdrBox.innerHTML = sdrs.length
+        ? sdrs.map((s) => `
+            <div class="rel-line">
+              <strong>${esc(titleById.get(s.eventAId) || '#' + s.eventAId)}</strong>
+              <span class="badge sdr-badge">同日</span>
+              <strong>${esc(titleById.get(s.eventBId) || '#' + s.eventBId)}</strong>
+              ${s.source ? `<div class="source"><b>出处：</b>${esc(s.source)}</div>` : ''}
+              ${s.note ? `<div class="muted">${esc(s.note)}</div>` : ''}
+            </div>`).join('')
+        : '<p class="muted">本版未记录同日关系。</p>';
+    }
   } catch (err) {
     msg.innerHTML = `<div class="alert error">加载失败：${esc(err.message)}</div>`;
   }

@@ -10,6 +10,7 @@ const {
   eventRowToApi,
   readDraftState,
   getDraftRevision,
+  sameDayRowToApi,
 } = require('./draft');
 const { previewRestore, confirmRestore } = require('./restore');
 const { suggestReselection } = require('./suggest');
@@ -214,6 +215,37 @@ router.delete('/api/editor/relations/:id', (req, res) => {
   const row = getDb().prepare('SELECT * FROM relations WHERE id = ?').get(id);
   if (!row) throw { status: 404, message: `关系 ${id} 不存在` };
   draftMutation((db) => db.prepare('DELETE FROM relations WHERE id = ?').run(id));
+  res.json({ deleted: id });
+});
+
+// ---- 「同日」关系 CRUD（两端不分先后；录入即按 id 归一化） ----
+router.post('/api/editor/same-day-relations', (req, res) => {
+  const a = Number(req.body.eventAId);
+  const b = Number(req.body.eventBId);
+  if (!Number.isInteger(a) || !Number.isInteger(b)) {
+    throw badRequest('eventAId 与 eventBId 必须是事件 id 整数');
+  }
+  if (a === b) throw badRequest('一个事件不能与自身构成同日关系');
+  getEventOr404(a);
+  getEventOr404(b);
+  const source = optionalString(req.body, 'source', 1000);
+  const note = optionalString(req.body, 'note', 2000);
+  // 无向关系：统一小 id 在前
+  const eventAId = Math.min(a, b);
+  const eventBId = Math.max(a, b);
+  const newId = draftMutation((db) =>
+    db
+      .prepare('INSERT INTO same_day_relations (event_a_id, event_b_id, source, note) VALUES (?, ?, ?, ?)')
+      .run(eventAId, eventBId, source, note).lastInsertRowid
+  );
+  res.status(201).json({ sameDayRelation: sameDayRowToApi(getDb().prepare('SELECT * FROM same_day_relations WHERE id = ?').get(newId)) });
+});
+
+router.delete('/api/editor/same-day-relations/:id', (req, res) => {
+  const id = Number(req.params.id);
+  const row = getDb().prepare('SELECT * FROM same_day_relations WHERE id = ?').get(id);
+  if (!row) throw { status: 404, message: `同日关系 ${id} 不存在` };
+  draftMutation((db) => db.prepare('DELETE FROM same_day_relations WHERE id = ?').run(id));
   res.json({ deleted: id });
 });
 

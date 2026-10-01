@@ -36,6 +36,8 @@ const EVENT_FIELDS = [
 ];
 
 const RELATION_FIELDS = ['source', 'note'];
+// 「同日」关系逐项比较的字段（与「先于」一致；单独导出便于测试与复用）
+const SAME_DAY_FIELDS = ['source', 'note'];
 
 function httpError(status, body) {
   throw Object.assign({ status }, body);
@@ -50,6 +52,7 @@ function versionHeader(detail, no) {
     publishedAt: detail.publishedAt,
     eventCount: detail.eventCount,
     relationCount: detail.relationCount,
+    sameDayRelationCount: detail.sameDayRelationCount || 0,
   };
 }
 
@@ -366,6 +369,201 @@ function diffRelations(fromDetail, toDetail, pairFrom, pairTo) {
   return { unchanged, changed, removed, added };
 }
 
+// ---------- 「同日」关系对照 ----------
+// 同日关系无向：配对后两端按「旧版事件 id 升序 / 新版事件 id 升序」归一成端点对。
+// 同端点对两侧各恰好一条时比较出处 / 备注；多条无法唯一对应时只列增删。
+function diffSameDayRelations(fromDetail, toDetail, pairFrom, pairTo) {
+  const fromTitle = new Map(fromDetail.events.map((e) => [e.eventId, e.title]));
+  const toTitle = new Map(toDetail.events.map((e) => [e.eventId, e.title]));
+  const title = (map, id) => (map.has(id) ? map.get(id) : `#${id}`);
+
+  function endpointsFrom(evFromA, evFromB) {
+    // 归一：按旧版事件 id 升序展示
+    const [a, b] = [evFromA, evFromB].sort((x, y) => x - y);
+    const aTo = pairFrom.has(a) ? pairFrom.get(a) : null;
+    const bTo = pairFrom.has(b) ? pairFrom.get(b) : null;
+    return {
+      eventA: {
+        fromEventId: a,
+        toEventId: aTo,
+        fromTitle: title(fromTitle, a),
+        toTitle: aTo !== null ? title(toTitle, aTo) : null,
+      },
+      eventB: {
+        fromEventId: b,
+        toEventId: bTo,
+        fromTitle: title(fromTitle, b),
+        toTitle: bTo !== null ? title(toTitle, bTo) : null,
+      },
+    };
+  }
+  function endpointsTo(evToA, evToB) {
+    const [a, b] = [evToA, evToB].sort((x, y) => x - y);
+    const aFrom = pairTo.has(a) ? pairTo.get(a) : null;
+    const bFrom = pairTo.has(b) ? pairTo.get(b) : null;
+    return {
+      eventA: {
+        fromEventId: aFrom,
+        toEventId: a,
+        fromTitle: aFrom !== null ? title(fromTitle, aFrom) : null,
+        toTitle: title(toTitle, a),
+      },
+      eventB: {
+        fromEventId: bFrom,
+        toEventId: b,
+        fromTitle: bFrom !== null ? title(fromTitle, bFrom) : null,
+        toTitle: title(toTitle, b),
+      },
+    };
+  }
+
+  const fromRels = fromDetail.sameDayRelations || [];
+  const toRels = toDetail.sameDayRelations || [];
+
+  // key（旧版端点对，升序） -> 旧版同日关系
+  const fromGroups = new Map();
+  const removed = [];
+  for (const r of fromRels) {
+    const ta = pairFrom.get(r.eventAId);
+    const tb = pairFrom.get(r.eventBId);
+    if (ta === undefined || tb === undefined) {
+      removed.push({
+        sameDayRelationIdFrom: r.sameDayRelationId,
+        sameDayRelationIdTo: null,
+        ...endpointsFrom(r.eventAId, r.eventBId),
+        source: r.source || '',
+        note: r.note || '',
+        reason: 'endpoint_unpaired',
+      });
+      continue;
+    }
+    // 用映射后的新版端点排序，保证与 to 侧归并一致
+    const ka = Math.min(ta, tb);
+    const kb = Math.max(ta, tb);
+    const key = `${ka}|${kb}`;
+    if (!fromGroups.has(key)) fromGroups.set(key, []);
+    fromGroups.get(key).push(r);
+  }
+
+  const toGroups = new Map();
+  const added = [];
+  for (const r of toRels) {
+    const fa = pairTo.get(r.eventAId);
+    const fb = pairTo.get(r.eventBId);
+    if (fa === undefined || fb === undefined) {
+      added.push({
+        sameDayRelationIdFrom: null,
+        sameDayRelationIdTo: r.sameDayRelationId,
+        ...endpointsTo(r.eventAId, r.eventBId),
+        source: r.source || '',
+        note: r.note || '',
+        reason: 'endpoint_unpaired',
+      });
+      continue;
+    }
+    const ka = Math.min(r.eventAId, r.eventBId);
+    const kb = Math.max(r.eventAId, r.eventBId);
+    const key = `${ka}|${kb}`;
+    if (!toGroups.has(key)) toGroups.set(key, []);
+    toGroups.get(key).push(r);
+  }
+
+  const unchanged = [];
+  const changed = [];
+
+  function fieldsFor(a, b) {
+    return SAME_DAY_FIELDS.map((field) => {
+      const av = a[field] || '';
+      const bv = b[field] || '';
+      return { field, from: av, to: bv, changed: av !== bv };
+    });
+  }
+
+  // 以旧版稳定顺序遍历端点对
+  const seenKeys = new Set();
+  for (const r of fromRels) {
+    const ta = pairFrom.get(r.eventAId);
+    const tb = pairFrom.get(r.eventBId);
+    if (ta === undefined || tb === undefined) continue;
+    const key = `${Math.min(ta, tb)}|${Math.max(ta, tb)}`;
+    if (seenKeys.has(key)) continue;
+    seenKeys.add(key);
+
+    const gFrom = fromGroups.get(key) || [];
+    const gTo = toGroups.get(key) || [];
+    if (gTo.length === 0) {
+      for (const rf of gFrom) {
+        removed.push({
+          sameDayRelationIdFrom: rf.sameDayRelationId,
+          sameDayRelationIdTo: null,
+          ...endpointsFrom(rf.eventAId, rf.eventBId),
+          source: rf.source || '',
+          note: rf.note || '',
+          reason: 'absent_in_to',
+        });
+      }
+      continue;
+    }
+    if (gFrom.length === 1 && gTo.length === 1) {
+      const rf = gFrom[0];
+      const rt = gTo[0];
+      const fields = fieldsFor(rf, rt);
+      const isChanged = fields.some((f) => f.changed);
+      const entry = {
+        sameDayRelationIdFrom: rf.sameDayRelationId,
+        sameDayRelationIdTo: rt.sameDayRelationId,
+        ...endpointsFrom(rf.eventAId, rf.eventBId),
+        fields,
+        changed: isChanged,
+      };
+      (isChanged ? changed : unchanged).push(entry);
+      continue;
+    }
+    for (const rf of gFrom) {
+      removed.push({
+        sameDayRelationIdFrom: rf.sameDayRelationId,
+        sameDayRelationIdTo: null,
+        ...endpointsFrom(rf.eventAId, rf.eventBId),
+        source: rf.source || '',
+        note: rf.note || '',
+        reason: 'ambiguous_endpoint_group',
+        groupSize: { from: gFrom.length, to: gTo.length },
+      });
+    }
+    for (const rt of gTo) {
+      added.push({
+        sameDayRelationIdFrom: null,
+        sameDayRelationIdTo: rt.sameDayRelationId,
+        ...endpointsTo(rt.eventAId, rt.eventBId),
+        source: rt.source || '',
+        note: rt.note || '',
+        reason: 'ambiguous_endpoint_group',
+        groupSize: { from: gFrom.length, to: gTo.length },
+      });
+    }
+  }
+
+  // 新版独有端点对
+  for (const r of toRels) {
+    const key = `${Math.min(r.eventAId, r.eventBId)}|${Math.max(r.eventAId, r.eventBId)}`;
+    if (seenKeys.has(key)) continue;
+    if (!pairTo.has(r.eventAId) || !pairTo.has(r.eventBId)) continue;
+    seenKeys.add(key);
+    for (const rt of toGroups.get(key)) {
+      added.push({
+        sameDayRelationIdFrom: null,
+        sameDayRelationIdTo: rt.sameDayRelationId,
+        ...endpointsTo(rt.eventAId, rt.eventBId),
+        source: rt.source || '',
+        note: rt.note || '',
+        reason: 'absent_in_from',
+      });
+    }
+  }
+
+  return { unchanged, changed, removed, added };
+}
+
 // ---------- 主入口 ----------
 function compareVersions({ fromVersionNo, toVersionNo, manualPairs = [] }) {
   const db = getDb();
@@ -441,6 +639,7 @@ function compareVersions({ fromVersionNo, toVersionNo, manualPairs = [] }) {
 
   // 关系按配对后端点比较
   const relations = diffRelations(fromDetail, toDetail, pairFrom, pairTo);
+  const sameDayRelations = diffSameDayRelations(fromDetail, toDetail, pairFrom, pairTo);
 
   return {
     ok: true,
@@ -464,7 +663,8 @@ function compareVersions({ fromVersionNo, toVersionNo, manualPairs = [] }) {
     },
     eventDiffs,
     relations,
+    sameDayRelations,
   };
 }
 
-module.exports = { compareVersions, EVENT_FIELDS, RELATION_FIELDS };
+module.exports = { compareVersions, EVENT_FIELDS, RELATION_FIELDS, SAME_DAY_FIELDS };

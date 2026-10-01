@@ -47,6 +47,20 @@ CREATE TABLE IF NOT EXISTS relations (
 CREATE INDEX IF NOT EXISTS idx_rel_earlier ON relations(earlier_id);
 CREATE INDEX IF NOT EXISTS idx_rel_later ON relations(later_id);
 
+-- 「同日」关系：两端不分先后（无向），要求两事件被确定为同一个具体日期。
+-- 录入时做 a<=b 归一化，便于展示与去重；自同日无意义，CHECK 禁止。
+CREATE TABLE IF NOT EXISTS same_day_relations (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  event_a_id INTEGER NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+  event_b_id INTEGER NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+  source     TEXT NOT NULL DEFAULT '',
+  note       TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  CHECK (event_a_id < event_b_id)
+);
+CREATE INDEX IF NOT EXISTS idx_sdr_a ON same_day_relations(event_a_id);
+CREATE INDEX IF NOT EXISTS idx_sdr_b ON same_day_relations(event_b_id);
+
 -- 草稿修订号：草稿区任意增删改（含从历史版本恢复）都单调 +1。
 -- 单行单列表；用于「恢复草稿」的乐观并发校验。
 CREATE TABLE IF NOT EXISTS draft_meta (
@@ -94,6 +108,19 @@ CREATE TABLE IF NOT EXISTS version_relations (
   sort_order   INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_vr_version ON version_relations(version_id);
+
+-- 「同日」关系的不可变快照（两端不分先后；按事件 id 归一化记录）
+CREATE TABLE IF NOT EXISTS version_same_day_relations (
+  id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+  version_id          INTEGER NOT NULL REFERENCES versions(id) ON DELETE CASCADE,
+  same_day_relation_id INTEGER NOT NULL,
+  event_a_id          INTEGER NOT NULL,
+  event_b_id          INTEGER NOT NULL,
+  source              TEXT NOT NULL DEFAULT '',
+  note                TEXT NOT NULL DEFAULT '',
+  sort_order          INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_vsdr_version ON version_same_day_relations(version_id);
 
 -- 事件身份谱系：从某已发布版本恢复草稿时，每个重建事件记一行
 -- 「恢复后的新草稿事件 id → 被恢复快照中的旧草稿事件 id」。

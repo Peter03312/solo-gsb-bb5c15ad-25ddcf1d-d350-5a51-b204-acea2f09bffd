@@ -93,6 +93,7 @@ label { font-size: 13px; color: var(--muted); display: block; margin-bottom: 3px
   background: #fff;
 }
 .badge.prec { border-color: var(--accent); color: var(--accent-dark); }
+.badge.sdr-badge { border-color: var(--ok); color: var(--ok); background: var(--ok-bg); }
 
 .muted { color: var(--muted); font-size: 13px; }
 .source {

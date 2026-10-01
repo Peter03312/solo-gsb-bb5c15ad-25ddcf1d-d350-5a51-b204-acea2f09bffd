@@ -66,11 +66,26 @@ function relationRowToApi(r) {
   };
 }
 
+// 「同日」关系行 → API（两端不分先后，字段名 eventAId/eventBId）
+function sameDayRowToApi(r) {
+  return {
+    id: r.id,
+    eventAId: r.event_a_id,
+    eventBId: r.event_b_id,
+    source: r.source,
+    note: r.note,
+  };
+}
+
 // 草稿全貌（供 /api/editor/state 与恢复后返回复用）
 function readDraftState() {
   const db = getDb();
   const events = db.prepare('SELECT * FROM events ORDER BY id').all().map(eventRowToApi);
   const relations = db.prepare('SELECT * FROM relations ORDER BY id').all().map(relationRowToApi);
+  const sameDayRelations = db
+    .prepare('SELECT * FROM same_day_relations ORDER BY id')
+    .all()
+    .map(sameDayRowToApi);
   const currentVersionNo = latestVersionNo();
   return {
     currentVersionNo,
@@ -78,6 +93,7 @@ function readDraftState() {
     draftRevision: getDraftRevision(),
     events,
     relations,
+    sameDayRelations,
   };
 }
 
@@ -88,5 +104,6 @@ module.exports = {
   claimRowToApi,
   eventRowToApi,
   relationRowToApi,
+  sameDayRowToApi,
   readDraftState,
 };

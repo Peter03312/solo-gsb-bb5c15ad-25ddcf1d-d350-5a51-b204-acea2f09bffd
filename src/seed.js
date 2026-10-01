@@ -50,11 +50,20 @@ function run() {
     { precision: 'day', year: 1962, month: 10, day: 1, source: '《公社机电站志（手稿）》第 12 页' },
   ]);
 
+  // 动员会当日傍晚分粮：与动员会「同日」（两端不分先后）
+  const e4 = addEvent('动员会当日傍晚分粮', '动员会散会后在晒谷场旁按人口分发口粮。', [
+    { precision: 'day', year: 1958, month: 9, day: 12, source: '王秀兰口述，2021-08-02 访谈', note: '“就是动员会那天下晚的事”' },
+  ]);
+
   // 动员会 先于 通水 先于 抽水机到站
   insRel.run(e1.eid, e2.eid, '李宝山、王秀兰二人口述一致', '');
   insRel.run(e2.eid, e3.eid, '张德福口述：“先有水渠，后有抽水机”', '');
 
-  console.log('演示数据已写入草稿区（3 个事件，含矛盾主张各 2 条，2 条先于关系）。');
+  // 动员会 同日 当日傍晚分粮
+  db.prepare('INSERT INTO same_day_relations (event_a_id, event_b_id, source, note) VALUES (?, ?, ?, ?)')
+    .run(Math.min(e4.eid, e1.eid), Math.max(e4.eid, e1.eid), '王秀兰口述：动员会与分粮同一天', '');
+
+  console.log('演示数据已写入草稿区（4 个事件，含矛盾主张各 2 条，2 条先于关系、1 条同日关系）。');
   console.log(`当前已发布版本数：${latestVersionNo()}。请到 /editor 选择主张并发布。`);
 }
 
